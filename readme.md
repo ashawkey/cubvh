@@ -35,7 +35,7 @@ points # [N, 3]
 # uvw is the barycentric corrdinates of the closest point on the closest face (None if `return_uvw` is False).
 distances, face_id, uvw = BVH.unsigned_distance(points, return_uvw=True) # [N], [N], [N, 3]
 
-### query signed distance (INNER is NEGETIVE!)
+### query signed distance (INNER is NEGATIVE!)
 # for watertight meshes (default)
 distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='watertight') # [N], [N], [N, 3]
 # for non-watertight meshes:
