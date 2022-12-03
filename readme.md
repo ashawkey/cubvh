@@ -5,6 +5,9 @@ A CUDA Mesh BVH acceleration toolkit.
 ### Install
 
 ```python
+pip install git+https://github.com/ashawkey/cubvh
+
+# or locally
 git clone https://github.com/ashawkey/cubvh
 cd cubvh
 pip install .
@@ -12,22 +15,11 @@ pip install .
 
 ### Usage
 
-Example for a mesh normal renderer:
-
-```bash
-python test/renderer.py # default, show a dodecahedron
-python test/renderer.py --mesh example.ply # show any mesh file
-```
-
-https://user-images.githubusercontent.com/25863658/183238748-7ac82808-6cd3-4bb6-867a-9c22f8e3f7dd.mp4
-
-Example code:
-
 ```python
 import numpy as np
 import trimesh
-
 import torch
+
 import cubvh
 
 ### build BVH from mesh
@@ -40,6 +32,7 @@ intersections, face_normals, depth = BVH.ray_trace(rays_o, rays_d) # [N, 3], [N,
 
 ### query unsigned distance
 points # [N, 3]
+# uvw is the barycentric corrdinates of the closest point on the closest face (None if `return_uvw` is False).
 distances, face_id, uvw = BVH.unsigned_distance(points, return_uvw=True) # [N], [N], [N, 3]
 
 ### query signed distance (INNER is NEGETIVE!)
@@ -48,6 +41,16 @@ distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='wat
 # for non-watertight meshes:
 distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='raystab') # [N], [N], [N, 3]
 ```
+
+
+Example for a mesh normal renderer by `ray_trace`:
+
+```bash
+python test/renderer.py # default, show a dodecahedron
+python test/renderer.py --mesh example.ply # show any mesh file
+```
+
+https://user-images.githubusercontent.com/25863658/183238748-7ac82808-6cd3-4bb6-867a-9c22f8e3f7dd.mp4
 
 
 ### Acknowledgement
