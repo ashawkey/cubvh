@@ -28,7 +28,7 @@ BVH = cubvh.cuBVH(mesh.vertices, mesh.faces) # build with numpy.ndarray/torch.Te
 
 ### query ray-mesh intersection
 rays_o, rays_d = get_ray(pose, intrinsics, H, W) # [N, 3], [N, 3], query with torch.Tensor (cuda)
-intersections, face_normals, depth = BVH.ray_trace(rays_o, rays_d) # [N, 3], [N, 3], [N,]
+intersections, face_id, depth = BVH.ray_trace(rays_o, rays_d) # [N, 3], [N,], [N,]
 
 ### query unsigned distance
 points # [N, 3]
