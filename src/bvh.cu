@@ -2,6 +2,7 @@
 #include <cubvh/common.h>
 #include <cubvh/triangle.cuh>
 #include <cubvh/bvh.cuh>
+#include <cubvh/pcg32.h>
 
 // #ifdef NGP_OPTIX
 // #  include <optix.h>
@@ -132,8 +133,8 @@ constexpr float MAX_DIST_SQ = MAX_DIST*MAX_DIST;
 // }
 // #endif //NGP_OPTIX
 
-// __global__ void signed_distance_watertight_kernel(uint32_t n_elements, const Vector3f* __restrict__ positions, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float* __restrict__ distances, bool use_existing_distances_as_upper_bounds = false);
-// __global__ void signed_distance_raystab_kernel(uint32_t n_elements, const Vector3f* __restrict__ positions, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float* __restrict__ distances, bool use_existing_distances_as_upper_bounds = false);
+__global__ void signed_distance_watertight_kernel(uint32_t n_elements, const Vector3f* __restrict__ positions, float* __restrict__ distances, int64_t* __restrict__ face_id, Vector3f* __restrict__ uvw, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, bool use_existing_distances_as_upper_bounds);
+__global__ void signed_distance_raystab_kernel(uint32_t n_elements, const Vector3f* __restrict__ positions, float* __restrict__ distances, int64_t* __restrict__ face_id, Vector3f* __restrict__ uvw, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, bool use_existing_distances_as_upper_bounds);
 __global__ void unsigned_distance_kernel(uint32_t n_elements, const Vector3f* __restrict__ positions, float* __restrict__ distances, int64_t* __restrict__ face_id, Vector3f* __restrict__ uvw, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, bool use_existing_distances_as_upper_bounds);
 __global__ void raytrace_kernel(uint32_t n_elements, const Vector3f* __restrict__ rays_o, const Vector3f* __restrict__ rays_d, Vector3f* __restrict__ positions, int64_t* __restrict__ face_id, float* __restrict__ depth, const TriangleBvhNode* __restrict__ nodes, const Triangle* __restrict__ triangles);
 
@@ -391,76 +392,69 @@ public:
         return result / total_weight;
     }
 
-    // __host__ __device__ static float signed_distance_watertight(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float max_distance_sq = MAX_DIST_SQ) {
-    //     auto p = closest_triangle(point, bvhnodes, triangles, max_distance_sq);
+    __host__ __device__ static std::pair<int, float> signed_distance_watertight(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float max_distance_sq = MAX_DIST_SQ) {
+        auto res = closest_triangle(point, bvhnodes, triangles, max_distance_sq);
 
-    //     const Triangle& tri = triangles[p.first];
-    //     Vector3f closest_point = tri.closest_point(point);
-    //     Vector3f avg_normal = avg_normal_around_point(closest_point, bvhnodes, triangles);
+        const Triangle& tri = triangles[res.first];
+        Vector3f closest_point = tri.closest_point(point);
+        Vector3f avg_normal = avg_normal_around_point(closest_point, bvhnodes, triangles);
 
-    //     return std::copysignf(p.second, avg_normal.dot(point - closest_point));
-    // }
+        return {res.first, std::copysignf(res.second, avg_normal.dot(point - closest_point))};
+    }
 
-    // __host__ __device__ static float signed_distance_raystab(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float max_distance_sq = MAX_DIST_SQ, default_rng_t rng={}) {
-    //     float distance = unsigned_distance(point, bvhnodes, triangles, max_distance_sq);
+    __host__ __device__ static std::pair<int, float> signed_distance_raystab(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float max_distance_sq = MAX_DIST_SQ, pcg32 rng={}) {
+        auto res = closest_triangle(point, bvhnodes, triangles, max_distance_sq);
 
-    //     Vector2f offset = random_val_2d(rng);
+        Vector2f offset = {rng.next_float(), rng.next_float()};
 
-    //     static constexpr uint32_t N_STAB_RAYS = 32;
-    //     for (uint32_t i = 0; i < N_STAB_RAYS; ++i) {
-    //         // Use a Fibonacci lattice (with random offset) to regularly
-    //         // distribute the stab rays over the sphere.
-    //         Vector3f d = fibonacci_dir<N_STAB_RAYS>(i, offset);
+        static constexpr uint32_t N_STAB_RAYS = 32;
+        for (uint32_t i = 0; i < N_STAB_RAYS; ++i) {
+            // Use a Fibonacci lattice (with random offset) to regularly
+            // distribute the stab rays over the sphere.
+            Vector3f d = fibonacci_dir<N_STAB_RAYS>(i, offset);
 
-    //         // If any of the stab rays goes outside the mesh, the SDF is positive.
-    //         if (ray_intersect(point, -d, bvhnodes, triangles).first < 0 || ray_intersect(point, d, bvhnodes, triangles).first < 0) {
-    //             return distance;
-    //         }
-    //     }
+            // If any of the stab rays goes outside the mesh, the SDF is positive.
+            if (ray_intersect(point, -d, bvhnodes, triangles).first < 0 || ray_intersect(point, d, bvhnodes, triangles).first < 0) {
+                return {res.first, res.second};
+            }
+        }
 
-    //     return -distance;
-    // }
+        return {res.first, -res.second};
+    }
 
-    // // // Assumes that "point" is a location on a triangle
-    // // Vector3f avg_normal_around_point(const Vector3f& point, const Triangle* __restrict__ triangles) const {
-    // //     return avg_normal_around_point(point, m_nodes.data(), triangles);
-    // // }
 
-    // // float signed_distance(EMeshSdfMode mode, const Vector3f& point, const std::vector<Triangle>& triangles) const {
-    // //     if (mode == EMeshSdfMode::Watertight) {
-    // //         return signed_distance_watertight(point, m_nodes.data(), triangles.data());
-    // //     } else {
-    // //         return signed_distance_raystab(point, m_nodes.data(), triangles.data());
-    // //     }
-    // // }
+    void signed_distance_gpu(uint32_t n_elements, uint32_t mode, const float* positions, float* distances, int64_t* face_id, float* uvw, const Triangle* gpu_triangles, cudaStream_t stream) override {
 
-    // void signed_distance_gpu(uint32_t n_elements, EMeshSdfMode mode, const Vector3f* gpu_positions, float* gpu_distances, const Triangle* gpu_triangles, bool use_existing_distances_as_upper_bounds, cudaStream_t stream) override {
-    //     if (mode == EMeshSdfMode::Watertight) {
-    //         linear_kernel(signed_distance_watertight_kernel, 0, stream,
-    //             n_elements,
-    //             gpu_positions,
-    //             m_nodes_gpu.data(),
-    //             gpu_triangles,
-    //             gpu_distances,
-    //             use_existing_distances_as_upper_bounds
-    //         );
-    //     } else {
-    //         {
-    //             if (mode == EMeshSdfMode::Raystab) {
-    //                 linear_kernel(signed_distance_raystab_kernel, 0, stream,
-    //                     n_elements,
-    //                     gpu_positions,
-    //                     m_nodes_gpu.data(),
-    //                     gpu_triangles,
-    //                     gpu_distances,
-    //                     use_existing_distances_as_upper_bounds
-    //                 );
-    //             } else if (mode == EMeshSdfMode::PathEscape) {
-    //                 throw std::runtime_error{"TriangleBvh: EMeshSdfMode::PathEscape is only supported with OptiX enabled."};
-    //             }
-    //         }
-    //     }
-    // }
+        const Vector3f* positions_vec = (const Vector3f*)positions;
+        Vector3f* uvw_vec = (Vector3f*)uvw;
+
+        if (mode == 0) {
+            // watertight
+            linear_kernel(signed_distance_watertight_kernel, 0u, stream,
+                n_elements,
+                positions_vec,
+                distances,
+                face_id,
+                uvw_vec,
+                m_nodes_gpu.data(),
+                gpu_triangles,
+                false
+            );
+
+        } else {
+            // raystab
+            linear_kernel(signed_distance_raystab_kernel, 0u, stream,
+                n_elements,
+                positions_vec,
+                distances,
+                face_id,
+                uvw_vec,
+                m_nodes_gpu.data(),
+                gpu_triangles,
+                false
+            );
+        }
+    }
 
     void unsigned_distance_gpu(uint32_t n_elements, const float* positions, float* distances, int64_t* face_id, float* uvw, const Triangle* gpu_triangles, cudaStream_t stream) override {
 
@@ -477,7 +471,6 @@ public:
             gpu_triangles,
             false
         );
-
     }
 
     void ray_trace_gpu(uint32_t n_elements, const float* rays_o, const float* rays_d, float* positions, int64_t* face_id, float* depth, const Triangle* gpu_triangles, cudaStream_t stream) override {
@@ -622,37 +615,61 @@ std::unique_ptr<TriangleBvh> TriangleBvh::make() {
     return std::unique_ptr<TriangleBvh>(new TriangleBvh4());
 }
 
-// __global__ void signed_distance_watertight_kernel(uint32_t n_elements,
-//     const Vector3f* __restrict__ positions,
-//     const TriangleBvhNode* __restrict__ bvhnodes,
-//     const Triangle* __restrict__ triangles,
-//     float* __restrict__ distances,
-//     bool use_existing_distances_as_upper_bounds
-// ) {
-//     uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-//     if (i >= n_elements) return;
+__global__ void signed_distance_watertight_kernel(
+    uint32_t n_elements, const Vector3f* __restrict__ positions,
+    float* __restrict__ distances, int64_t* __restrict__ face_id, Vector3f* __restrict__ uvw,
+    const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, bool use_existing_distances_as_upper_bounds
+) {
+    uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_elements) return;
 
-//     float max_distance = use_existing_distances_as_upper_bounds ? distances[i] : MAX_DIST;
-//     distances[i] = TriangleBvh4::signed_distance_watertight(positions[i], bvhnodes, triangles, max_distance*max_distance);
-// }
+    float max_distance = use_existing_distances_as_upper_bounds ? distances[i] : MAX_DIST;
 
-// __global__ void signed_distance_raystab_kernel(
-//     uint32_t n_elements,
-//     const Vector3f* __restrict__ positions,
-//     const TriangleBvhNode* __restrict__ bvhnodes,
-//     const Triangle* __restrict__ triangles,
-//     float* __restrict__ distances,
-//     bool use_existing_distances_as_upper_bounds
-// ) {
-//     uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
-//     if (i >= n_elements) return;
+    Vector3f point = positions[i];
 
-//     float max_distance = use_existing_distances_as_upper_bounds ? distances[i] : MAX_DIST;
-//     default_rng_t rng;
-//     rng.advance(i * 2);
+    auto res = TriangleBvh4::signed_distance_watertight(point, bvhnodes, triangles, max_distance*max_distance);
 
-//     distances[i] = TriangleBvh4::signed_distance_raystab(positions[i], bvhnodes, triangles, max_distance*max_distance, rng);
-// }
+    // write 
+    distances[i] = res.second;
+    face_id[i] = triangles[res.first].id;
+
+    // optional output
+    if (uvw) {
+        // get closest point
+        Vector3f cpoint = triangles[res.first].closest_point(point);
+        // query uvw
+        uvw[i] = triangles[res.first].barycentric(cpoint);
+    }
+}
+
+__global__ void signed_distance_raystab_kernel(
+    uint32_t n_elements, const Vector3f* __restrict__ positions,
+    float* __restrict__ distances, int64_t* __restrict__ face_id, Vector3f* __restrict__ uvw,
+    const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, bool use_existing_distances_as_upper_bounds
+) {
+    uint32_t i = blockIdx.x * blockDim.x + threadIdx.x;
+    if (i >= n_elements) return;
+
+    float max_distance = use_existing_distances_as_upper_bounds ? distances[i] : MAX_DIST;
+    pcg32 rng;
+    rng.advance(i * 2);
+
+    Vector3f point = positions[i];
+
+    auto res = TriangleBvh4::signed_distance_raystab(point, bvhnodes, triangles, max_distance*max_distance, rng);
+
+    // write 
+    distances[i] = res.second;
+    face_id[i] = triangles[res.first].id;
+
+    // optional output
+    if (uvw) {
+        // get closest point
+        Vector3f cpoint = triangles[res.first].closest_point(point);
+        // query uvw
+        uvw[i] = triangles[res.first].barycentric(cpoint);
+    }
+}
 
 __global__ void unsigned_distance_kernel(
     uint32_t n_elements, const Vector3f* __restrict__ positions,

@@ -30,18 +30,23 @@ import trimesh
 import torch
 import cubvh
 
-# build BVH from mesh
+### build BVH from mesh
 mesh = trimesh.load('example.ply')
 BVH = cubvh.cuBVH(mesh.vertices, mesh.faces) # build with numpy.ndarray/torch.Tensor
 
-
-# query ray-mesh intersection
+### query ray-mesh intersection
 rays_o, rays_d = get_ray(pose, intrinsics, H, W) # [N, 3], [N, 3], query with torch.Tensor (cuda)
 intersections, face_normals, depth = BVH.ray_trace(rays_o, rays_d) # [N, 3], [N, 3], [N,]
 
-# query unsigned distance
+### query unsigned distance
 points # [N, 3]
 distances, face_id, uvw = BVH.unsigned_distance(points, return_uvw=True) # [N], [N], [N, 3]
+
+### query signed distance (INNER is NEGETIVE!)
+# for watertight meshes (default)
+distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='watertight') # [N], [N], [N, 3]
+# for non-watertight meshes:
+distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='raystab') # [N], [N], [N, 3]
 ```
 
 

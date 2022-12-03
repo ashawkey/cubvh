@@ -5,6 +5,11 @@ import torch
 # CUDA extension
 import _cubvh as _backend
 
+_sdf_mode_to_id = {
+    'watertight': 0,
+    'raystab': 1,
+}
+
 class cuBVH():
     def __init__(self, vertices, triangles):
         # vertices: np.ndarray, [N, 3]
@@ -78,4 +83,33 @@ class cuBVH():
         return distances, face_id, uvw
 
     
-    # def signed_distance():
+    def signed_distance(self, positions, return_uvw=False, mode='watertight'):
+        # positions: torch.Tensor, float, [N, 3]
+
+        positions = positions.float().contiguous()
+
+        if not positions.is_cuda: positions = positions.cuda()
+
+        prefix = positions.shape[:-1]
+        positions = positions.view(-1, 3)
+
+        N = positions.shape[0]
+
+        # init output buffers
+        distances = torch.empty(N, dtype=torch.float32, device=positions.device)
+        face_id = torch.empty(N, dtype=torch.int64, device=positions.device)
+
+        if return_uvw:
+            uvw = torch.empty(N, 3, dtype=torch.float32, device=positions.device)
+        else:
+            uvw = None
+        
+        self.impl.signed_distance(positions, distances, face_id, uvw, _sdf_mode_to_id[mode]) # [N, 3]
+
+        distances = distances.view(*prefix)
+        face_id = face_id.view(*prefix)
+        if uvw is not None:
+            uvw = uvw.view(*prefix, 3)
+
+        return distances, face_id, uvw
+

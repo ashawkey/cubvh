@@ -42,7 +42,6 @@ public:
 
     }
 
-    // accept torch tensor (gpu) to init
     void ray_trace(at::Tensor rays_o, at::Tensor rays_d, at::Tensor positions, at::Tensor face_id, at::Tensor depth) {
 
         const uint32_t n_elements = rays_o.size(0);
@@ -51,7 +50,6 @@ public:
         triangle_bvh->ray_trace_gpu(n_elements, rays_o.data_ptr<float>(), rays_d.data_ptr<float>(), positions.data_ptr<float>(), face_id.data_ptr<int64_t>(), depth.data_ptr<float>(), triangles_gpu.data(), stream);
     }
 
-    // optionally return uvw (barycentric) and face_id
     void unsigned_distance(at::Tensor positions, at::Tensor distances, at::Tensor face_id, at::optional<at::Tensor> uvw) {
 
         const uint32_t n_elements = positions.size(0);
@@ -59,6 +57,14 @@ public:
 
         triangle_bvh->unsigned_distance_gpu(n_elements, positions.data_ptr<float>(), distances.data_ptr<float>(), face_id.data_ptr<int64_t>(), uvw.has_value() ? uvw.value().data_ptr<float>() : nullptr, triangles_gpu.data(), stream);
 
+    }
+
+    void signed_distance(at::Tensor positions, at::Tensor distances, at::Tensor face_id, at::optional<at::Tensor> uvw, uint32_t mode) {
+
+        const uint32_t n_elements = positions.size(0);
+        cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+        triangle_bvh->signed_distance_gpu(n_elements, mode, positions.data_ptr<float>(), distances.data_ptr<float>(), face_id.data_ptr<int64_t>(), uvw.has_value() ? uvw.value().data_ptr<float>() : nullptr, triangles_gpu.data(), stream);
     }
 
     std::vector<Triangle> triangles_cpu;
