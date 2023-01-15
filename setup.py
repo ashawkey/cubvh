@@ -122,6 +122,7 @@ setup(
     url='https://github.com/ashawkey/cubvh',
     author='kiui',
     author_email='ashawkey1999@gmail.com',
+    packages=['cubvh'],
     ext_modules=[
         CUDAExtension(
             name='_cubvh', # extension name, import this to use CUDA API
