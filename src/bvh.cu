@@ -411,6 +411,7 @@ public:
         for (uint32_t i = 0; i < N_STAB_RAYS; ++i) {
             // Use a Fibonacci lattice (with random offset) to regularly
             // distribute the stab rays over the sphere.
+            // ref: http://extremelearning.com.au/how-to-evenly-distribute-points-on-a-sphere-more-effectively-than-the-canonical-fibonacci-lattice/
             Vector3f d = fibonacci_dir<N_STAB_RAYS>(i, offset);
 
             // If any of the stab rays goes outside the mesh, the SDF is positive.

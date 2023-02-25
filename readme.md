@@ -24,6 +24,7 @@ import cubvh
 
 ### build BVH from mesh
 mesh = trimesh.load('example.ply')
+# NOTE: you need to normalize the mesh first, since the max distance is hard-coded to 10.
 BVH = cubvh.cuBVH(mesh.vertices, mesh.faces) # build with numpy.ndarray/torch.Tensor
 
 ### query ray-mesh intersection

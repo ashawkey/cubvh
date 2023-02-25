@@ -18,6 +18,7 @@ class cuBVH():
         if torch.is_tensor(vertices): vertices = vertices.detach().cpu().numpy()
         if torch.is_tensor(triangles): triangles = triangles.detach().cpu().numpy()
 
+        # check inputs
         assert triangles.shape[0] > 8, "BVH needs at least 8 triangles."
         
         # implementation
