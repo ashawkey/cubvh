@@ -149,9 +149,8 @@ setup(
         'trimesh',
         'opencv-python',
         'torch',
-        'numpy ',
+        'numpy',
         'tqdm',
         'matplotlib',
-        'dearpygui',
     ],
 )
