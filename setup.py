@@ -35,8 +35,8 @@ def find_eigen(min_ver=(3, 3, 0)):
                 elif line.startswith(MAJOR_VER_STR):
                     major_ver = int(line[len(MAJOR_VER_STR):])
                 elif line.startswith(MINOR_VER_STR):
-                    minor_ver = int(line[len(MAJOR_VER_STR):])
-            if not world_ver or not major_ver or not minor_ver:
+                    minor_ver = int(line[len(MINOR_VER_STR):])
+	    if world_ver is None or major_ver is None or minor_ver is None:
                 print('Failed to parse macros file', macros_path)
             else:
                 ver = (world_ver, major_ver, minor_ver)
