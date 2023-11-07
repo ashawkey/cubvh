@@ -1,8 +1,8 @@
 // #include <pybind11/pybind11.h>
-// #include <pybind11/numpy.h>
-// #include <pybind11/eigen.h>
-
 #include <torch/extension.h>
+
+#include <pybind11/numpy.h>
+#include <pybind11/eigen.h>
 
 #include <cubvh/api.h>
 
