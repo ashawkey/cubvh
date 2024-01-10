@@ -110,15 +110,23 @@ if os.name == "nt":
 cpp_standard = 14
 
 # Get CUDA version and make sure the targeted compute capability is compatible
-if os.system("nvcc --version") == 0:
-	nvcc_out = subprocess.check_output(["nvcc", "--version"]).decode()
-	cuda_version = re.search(r"release (\S+),", nvcc_out)
+nvcc_try_paths = [
+	"",
+	"/usr/local/cuda/bin"
+]
+for path in nvcc_try_paths:
+	nvcc_path = os.path.join(path, "nvcc")
+	if os.path.exists(path):
+		if os.system(f"{nvcc_path} --version") == 0:
+			nvcc_out = subprocess.check_output([nvcc_path, "--version"]).decode()
+			cuda_version = re.search(r"release (\S+),", nvcc_out)
 
-	if cuda_version:
-		cuda_version = parse_version(cuda_version.group(1))
-		print(f"Detected CUDA version {cuda_version}")
-		if cuda_version >= parse_version("11.0"):
-			cpp_standard = 17
+		if cuda_version:
+			cuda_version = parse_version(cuda_version.group(1))
+			print(f"Detected CUDA version {cuda_version}")
+			if cuda_version >= parse_version("11.0"):
+				cpp_standard = 17
+		break
 
 print(f"Targeting C++ standard {cpp_standard}")
 
