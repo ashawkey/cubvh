@@ -121,11 +121,11 @@ for path in nvcc_try_paths:
 			nvcc_out = subprocess.check_output([nvcc_path, "--version"]).decode()
 			cuda_version = re.search(r"release (\S+),", nvcc_out)
 
-		if cuda_version:
-			cuda_version = parse_version(cuda_version.group(1))
-			print(f"Detected CUDA version {cuda_version}")
-			if cuda_version >= parse_version("11.0"):
-				cpp_standard = 17
+			if cuda_version:
+				cuda_version = parse_version(cuda_version.group(1))
+				print(f"Detected CUDA version {cuda_version}")
+				if cuda_version >= parse_version("11.0"):
+					cpp_standard = 17
 		break
 
 print(f"Targeting C++ standard {cpp_standard}")
