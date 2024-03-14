@@ -4,6 +4,9 @@ A CUDA Mesh BVH acceleration toolkit.
 
 ### Install
 
+Please make sure [`eigen >= 3.3`](https://eigen.tuxfamily.org/index.php?title=Main_Page) is installed. 
+For example, ubuntu systems can use `sudo apt install libeigen3-dev`.
+
 ```python
 pip install git+https://github.com/ashawkey/cubvh
 
@@ -12,6 +15,10 @@ git clone https://github.com/ashawkey/cubvh
 cd cubvh
 pip install .
 ```
+
+#### Trouble Shooting
+* `fatal error: eigen/matrix.h: No such file or directory`:
+This is a known issue for `torch==2.1.0` and `torch==2.1.1` (https://github.com/pytorch/pytorch/issues/112841). Please avoid using this two versions.
 
 ### Usage
 
