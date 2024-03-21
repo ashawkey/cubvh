@@ -17,8 +17,14 @@ pip install .
 ```
 
 #### Trouble Shooting
-* `fatal error: eigen/matrix.h: No such file or directory`:
-This is a known issue for `torch==2.1.0` and `torch==2.1.1` (https://github.com/pytorch/pytorch/issues/112841). Please avoid using this two versions.
+**`fatal error: eigen/matrix.h: No such file or directory`**
+
+This is a known issue for `torch==2.1.0` and `torch==2.1.1` (https://github.com/pytorch/pytorch/issues/112841). 
+To patch up these two versions, clone this repository, and copy `patch/eigen` to your pytorch include directory:
+```bash
+# for example, if you are using anaconda (assume base env)
+cp -r patch/eigen ~/anaconda3/lib/python3.9/site-packages/torch/include/pybind11/
+```
 
 ### Usage
 
