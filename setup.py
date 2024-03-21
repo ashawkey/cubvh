@@ -23,7 +23,7 @@ def find_eigen(min_ver=(3, 3, 0)):
 	MINOR_VER_STR = "#define EIGEN_MINOR_VERSION"
 	EIGEN_WEB_URL = 'https://gitlab.com/libeigen/eigen/-/archive/3.3.7/eigen-3.3.7.tar.bz2'
 	TMP_EIGEN_FILE = 'tmp_eigen.tar.bz2'
-	TMP_EIGEN_DIR = './eigen-3.3.7'
+	TMP_EIGEN_DIR = './eigen3.3.7'
 	min_ver_str = '.'.join(map(str, min_ver))
 
 	eigen_path = None
@@ -184,10 +184,7 @@ setup(
 		'ninja',
 		'pybind11',
 		'trimesh',
-		'opencv-python',
 		'torch',
 		'numpy',
-		'tqdm',
-		'matplotlib',
 	],
 )
