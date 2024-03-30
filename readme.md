@@ -4,14 +4,8 @@ A CUDA Mesh BVH acceleration toolkit.
 
 ### Install
 
-Please make sure [`eigen >= 3.3`](https://eigen.tuxfamily.org/index.php?title=Main_Page) is installed. 
-For example, ubuntu systems can use `sudo apt install libeigen3-dev`.
-
-```python
-pip install git+https://github.com/ashawkey/cubvh
-
-# or locally
-git clone https://github.com/ashawkey/cubvh
+```bash
+git clone --recursive https://github.com/ashawkey/cubvh
 cd cubvh
 pip install .
 ```
@@ -25,6 +19,12 @@ To patch up these two versions, clone this repository, and copy `patch/eigen` to
 # for example, if you are using anaconda (assume base env)
 cp -r patch/eigen ~/anaconda3/lib/python3.9/site-packages/torch/include/pybind11/
 ```
+
+**`fatal error: Eigen/Dense: No such file or directory`**
+
+Please make sure [`eigen >= 3.3`](https://eigen.tuxfamily.org/index.php?title=Main_Page) is installed. 
+We have included it as a submodule in this repository, but you can also install it in your system include path.
+(For example, ubuntu systems can use `sudo apt install libeigen3-dev`.)
 
 ### Usage
 
