@@ -5,10 +5,14 @@ A CUDA Mesh BVH acceleration toolkit.
 ### Install
 
 ```bash
+pip install git+https://github.com/ashawkey/cubvh
+
+# or locally
 git clone --recursive https://github.com/ashawkey/cubvh
 cd cubvh
 pip install .
 ```
+It will take several minutes to build the CUDA dependency.
 
 #### Trouble Shooting
 **`fatal error: eigen/matrix.h: No such file or directory`**
