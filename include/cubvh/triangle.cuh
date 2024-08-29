@@ -30,7 +30,7 @@ struct Triangle {
         Eigen::Vector3f rov0 = ro - a;
         n = v1v0.cross( v2v0 );
         Eigen::Vector3f q = rov0.cross( rd );
-        float d = 1.0f/rd.dot( n );
+        float d = safe_divide(1.0f, rd.dot(n));
         float u = d*-q.dot( v2v0 );
         float v = d* q.dot( v1v0 );
         float t = d*-n.dot( rov0 );
