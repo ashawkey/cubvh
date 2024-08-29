@@ -149,15 +149,15 @@ struct BoundingBox {
     }
 
     __host__ __device__ Eigen::Vector2f ray_intersect(Eigen::Ref<const Eigen::Vector3f> pos, Eigen::Ref<const Eigen::Vector3f> dir) const {
-        float tmin = (min.x() - pos.x()) / dir.x();
-        float tmax = (max.x() - pos.x()) / dir.x();
+        float tmin = safe_divide(min.x() - pos.x(), dir.x());
+        float tmax = safe_divide(max.x() - pos.x(), dir.x());
 
         if (tmin > tmax) {
             host_device_swap(tmin, tmax);
         }
 
-        float tymin = (min.y() - pos.y()) / dir.y();
-        float tymax = (max.y() - pos.y()) / dir.y();
+        float tymin = safe_divide(min.y() - pos.y() / dir.y());
+        float tymax = safe_divide(max.y() - pos.y() / dir.y());
 
         if (tymin > tymax) {
             host_device_swap(tymin, tymax);
@@ -175,8 +175,8 @@ struct BoundingBox {
             tmax = tymax;
         }
 
-        float tzmin = (min.z() - pos.z()) / dir.z();
-        float tzmax = (max.z() - pos.z()) / dir.z();
+        float tzmin = safe_divide(min.z() - pos.z(), dir.z());
+        float tzmax = safe_divide(max.z() - pos.z(), dir.z());
 
         if (tzmin > tzmax) {
             host_device_swap(tzmin, tzmax);
