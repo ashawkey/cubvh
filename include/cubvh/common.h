@@ -95,7 +95,7 @@ __device__ __host__ Eigen::Vector3f fibonacci_dir(uint32_t i, const Eigen::Vecto
 	return cylindrical_to_dir(Eigen::Vector2f{fractf((i+epsilon) / (N_DIRS-1+2*epsilon) + offset.x()), fractf(i / GOLDEN_RATIO + offset.y())});
 }
 
-__host__ __device__ float safe_divide(float numerator, float denominator, float epsilon = 1e-6f) {
+inline __host__ __device__ float safe_divide(float numerator, float denominator, float epsilon = 1e-6f) {
 	if (fabs(denominator) < epsilon) {
 		if (denominator <= 0)
 			return -(numerator / epsilon); 

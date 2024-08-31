@@ -156,8 +156,8 @@ struct BoundingBox {
             host_device_swap(tmin, tmax);
         }
 
-        float tymin = safe_divide(min.y() - pos.y() / dir.y());
-        float tymax = safe_divide(max.y() - pos.y() / dir.y());
+        float tymin = safe_divide(min.y() - pos.y(), dir.y());
+        float tymax = safe_divide(max.y() - pos.y(), dir.y());
 
         if (tymin > tymax) {
             host_device_swap(tymin, tymax);
