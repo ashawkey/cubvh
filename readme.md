@@ -32,6 +32,8 @@ We have included it as a submodule in this repository, but you can also install 
 
 ### Usage
 
+**Basics:**
+
 ```python
 import numpy as np
 import trimesh
@@ -60,6 +62,36 @@ distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='wat
 distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='raystab') # [N], [N], [N, 3]
 ```
 
+**Robust Mesh Occupancy:**
+
+UDF + flood-fill for possibly non-watertight/single-layer meshes:
+
+```python
+resolution = 512
+device = torch.device('cuda')
+
+BVH = cubvh.cuBVH(vertices, faces)
+
+grid_points = torch.stack(
+    torch.meshgrid(
+        torch.linspace(-1, 1, resolution, device=device),
+        torch.linspace(-1, 1, resolution, device=device),
+        torch.linspace(-1, 1, resolution, device=device),
+        indexing="ij",
+    ), dim=-1,
+) # [N, N, N, 3]
+
+udf, _, _ = BVH.unsigned_distance(grid_points.view(-1, 3), return_uvw=False)
+udf = udf.cpu().numpy().reshape(resolution, resolution, resolution)
+occ = udf < 2 / resolution # tolerance 2 voxels
+
+empty_mask = morphology.flood(occ, (0, 0, 0), connectivity=1) # flood from the corner, which is for sure empty
+occ = ~empty_mask
+```
+Check [`test/robust_occupancy.py`](test/robust_occupancy.py) for more details.
+
+
+**Renderer:**
 
 Example for a mesh normal renderer by `ray_trace`:
 
