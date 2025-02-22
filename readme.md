@@ -67,6 +67,11 @@ distances, face_id, uvw = BVH.signed_distance(points, return_uvw=True, mode='ray
 UDF + flood-fill for possibly non-watertight/single-layer meshes:
 
 ```python
+import torch
+import cubvh
+import numpy as np
+from skimage import morphology
+
 resolution = 512
 device = torch.device('cuda')
 
@@ -88,7 +93,7 @@ occ = udf < 2 / resolution # tolerance 2 voxels
 empty_mask = morphology.flood(occ, (0, 0, 0), connectivity=1) # flood from the corner, which is for sure empty
 occ = ~empty_mask
 ```
-Check [`test/robust_occupancy.py`](test/robust_occupancy.py) for more details.
+Check [`test/extract_mesh_occupancy.py`](test/extract_mesh_occupancy.py) for more details.
 
 
 **Renderer:**
