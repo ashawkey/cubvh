@@ -93,7 +93,7 @@ occ = udf < 2 / resolution # tolerance 2 voxels
 empty_mask = morphology.flood(occ, (0, 0, 0), connectivity=1) # flood from the corner, which is for sure empty
 occ = ~empty_mask
 ```
-Check [`test/extract_mesh_occupancy.py`](test/extract_mesh_occupancy.py) for more details.
+Check [`test/extract_mesh_watertight.py`](test/extract_mesh_watertight.py) for more details.
 
 
 **Renderer:**

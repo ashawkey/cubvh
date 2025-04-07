@@ -1,22 +1,27 @@
 import os
 import zlib
+import glob
+import tqdm
 import time
-import numpy as np
-import torch
-
-import cubvh
 import mcubes
 import trimesh
 import argparse
+import numpy as np
+from skimage import morphology
+
+import torch
+import cubvh
 
 import kiui
 from kiui.mesh import Mesh
 
-from skimage import morphology
-
+"""
+Extract watertight mesh from a arbitrary mesh by UDF expansion and floodfill.
+"""
 parser = argparse.ArgumentParser()
-parser.add_argument('mesh', type=str)
+parser.add_argument('test_path', type=str)
 parser.add_argument('--res', type=int, default=512)
+parser.add_argument('--workspace', type=str, default='output')
 opt = parser.parse_args()
 
 device = torch.device('cuda')
@@ -37,6 +42,7 @@ def run(path):
     t0 = time.time()
     BVH = cubvh.cuBVH(mesh.v, mesh.f)
     print('BVH build time:', time.time() - t0)
+    eps = 2 / opt.res
 
     # naive sdf
     # sdf, _, _ = BVH.signed_distance(points.view(-1, 3), return_uvw=False, mode='raystab') # some mesh may not be watertight...
@@ -48,12 +54,19 @@ def run(path):
     udf, _, _ = BVH.unsigned_distance(points.view(-1, 3), return_uvw=False)
     print('UDF time:', time.time() - t0)
     udf = udf.cpu().numpy().reshape(opt.res, opt.res, opt.res)
-    occ = udf < 2 / opt.res # tolerance 2 voxels
+    occ = udf < eps # tolerance 2 voxels
 
     t0 = time.time()
     empty_mask = morphology.flood(occ, (0, 0, 0), connectivity=1) # flood from the corner, which is for sure empty
     print('Floodfill time:', time.time() - t0)
+
+    # binary occupancy
     occ = ~empty_mask
+
+    # truncated SDF
+    sdf = udf - eps  # inner is negative
+    inner_mask = occ & (sdf > 0)
+    sdf[inner_mask] *= -1
 
     # # packbits and compress
     # occ = occ.astype(np.uint8).reshape(-1)
@@ -70,15 +83,22 @@ def run(path):
     # occ = np.unpackbits(occ, count=opt.res**3).reshape(opt.res, opt.res, opt.res)
 
     # marching cubes
-    occ = occ.reshape(opt.res, opt.res, opt.res)
     t0 = time.time()
-    verts, faces = mcubes.marching_cubes(occ, 0.5)
-    # smoothed_occ = mcubes.smooth(occ, method='constrained')  # very slow
-    # verts, faces = mcubes.marching_cubes(smoothed_occ, 0)
+    vertices, triangles = mcubes.marching_cubes(sdf, 0)
+    vertices = vertices / (sdf.shape[-1] - 1.0) * 2 - 1
+    vertices = vertices.astype(np.float32)
+    triangles = triangles.astype(np.int32)
+    watertight_mesh = trimesh.Trimesh(vertices, triangles)
     print('MC time:', time.time() - t0)
 
-    verts = verts / (opt.res - 1) * 2 - 1
-    mesh = trimesh.Trimesh(vertices=verts, faces=faces)
-    mesh.export(os.path.basename(path).split('.')[0] + '.ply')
+    name = os.path.splitext(os.path.basename(path))[0]
+    watertight_mesh.export(f'{opt.workspace}/{name}.obj')
 
-run(opt.mesh)
+os.makedirs(opt.workspace, exist_ok=True)
+
+if os.path.isdir(opt.test_path):
+    file_paths = glob.glob(os.path.join(opt.test_path, "*"))
+    for path in tqdm.tqdm(file_paths):
+        run(path)
+else:
+    run(opt.test_path)

@@ -3,5 +3,5 @@ build/
 *.egg-info/
 *.so
 .vs/
-*.ply
 eigen*/
+output/
