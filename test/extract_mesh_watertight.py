@@ -99,6 +99,9 @@ os.makedirs(opt.workspace, exist_ok=True)
 if os.path.isdir(opt.test_path):
     file_paths = glob.glob(os.path.join(opt.test_path, "*"))
     for path in tqdm.tqdm(file_paths):
-        run(path)
+        try:
+            run(path)
+        except Exception as e:
+            print(f'[WARN] {path} failed: {e}')
 else:
     run(opt.test_path)
