@@ -13,7 +13,6 @@ import torch
 import cubvh
 
 import kiui
-from kiui.mesh import Mesh
 
 """
 Extract watertight mesh from a arbitrary mesh by UDF expansion and floodfill.
@@ -35,13 +34,34 @@ points = torch.stack(
     ), dim=-1,
 ) # [N, N, N, 3]
 
+
+def sphere_normalize(vertices):
+    bmin = vertices.min(axis=0)
+    bmax = vertices.max(axis=0)
+    bcenter = (bmax + bmin) / 2
+    radius = np.linalg.norm(vertices - bcenter, axis=-1).max()
+    vertices = (vertices - bcenter) / (radius)  # to [-1, 1]
+    return vertices
+
+
+def box_normalize(vertices, bound=0.95):
+    bmin = vertices.min(axis=0)
+    bmax = vertices.max(axis=0)
+    bcenter = (bmax + bmin) / 2
+    vertices = bound * (vertices - bcenter) / (bmax - bmin).max()
+    return vertices
+
+
 def run(path):
-    
-    mesh = Mesh.load(path, wotex=True, bound=0.95, device=device)
+
+    mesh = trimesh.load(path, process=False, force='mesh')
+    mesh.vertices = sphere_normalize(mesh.vertices)
+    vertices = torch.from_numpy(mesh.vertices).float().to(device)
+    triangles = torch.from_numpy(mesh.faces).long().to(device)
 
     t0 = time.time()
-    BVH = cubvh.cuBVH(mesh.v, mesh.f)
-    print('BVH build time:', time.time() - t0)
+    BVH = cubvh.cuBVH(vertices, triangles)
+    print(f'BVH build time: {time.time() - t0:.4f}s')
     eps = 2 / opt.res
 
     # naive sdf
@@ -52,13 +72,13 @@ def run(path):
     # udf floodfill
     t0 = time.time()
     udf, _, _ = BVH.unsigned_distance(points.view(-1, 3), return_uvw=False)
-    print('UDF time:', time.time() - t0)
+    print(f'UDF time: {time.time() - t0:.4f}s')
     udf = udf.cpu().numpy().reshape(opt.res, opt.res, opt.res)
     occ = udf < eps # tolerance 2 voxels
 
     t0 = time.time()
     empty_mask = morphology.flood(occ, (0, 0, 0), connectivity=1) # flood from the corner, which is for sure empty
-    print('Floodfill time:', time.time() - t0)
+    print(f'Floodfill time: {time.time() - t0:.4f}s')
 
     # binary occupancy
     occ = ~empty_mask
@@ -67,6 +87,8 @@ def run(path):
     sdf = udf - eps  # inner is negative
     inner_mask = occ & (sdf > 0)
     sdf[inner_mask] *= -1
+
+    print(f'SDF occupancy ratio: {np.sum(sdf < 0) / sdf.size:.4f}')
 
     # # packbits and compress
     # occ = occ.astype(np.uint8).reshape(-1)
@@ -89,7 +111,7 @@ def run(path):
     vertices = vertices.astype(np.float32)
     triangles = triangles.astype(np.int32)
     watertight_mesh = trimesh.Trimesh(vertices, triangles)
-    print('MC time:', time.time() - t0)
+    print(f'MC time: {time.time() - t0:.4f}s, vertices: {len(watertight_mesh.vertices)}, triangles: {len(watertight_mesh.faces)}')
 
     name = os.path.splitext(os.path.basename(path))[0]
     watertight_mesh.export(f'{opt.workspace}/{name}.obj')
