@@ -5,3 +5,5 @@ build/
 .vs/
 eigen*/
 output/
+data/
+temp_*
