@@ -69,25 +69,29 @@ def run(path):
     # sdf = sdf.cpu().numpy()
     # occ = (sdf < 0)
 
-    # udf floodfill
+    # udf
     t0 = time.time()
     udf, _, _ = BVH.unsigned_distance(points.view(-1, 3), return_uvw=False)
     print(f'UDF time: {time.time() - t0:.4f}s')
-    udf = udf.cpu().numpy().reshape(opt.res, opt.res, opt.res)
-    occ = udf < eps # tolerance 2 voxels
 
+    # floodfill
     t0 = time.time()
-    empty_mask = morphology.flood(occ, (0, 0, 0), connectivity=1) # flood from the corner, which is for sure empty
+    udf = udf.view(opt.res, opt.res, opt.res).contiguous()
+    occ = udf < eps
+    floodfill_mask = cubvh.floodfill(occ)
+    empty_label = floodfill_mask[0, 0, 0].item()
+    empty_mask = (floodfill_mask == empty_label)
     print(f'Floodfill time: {time.time() - t0:.4f}s')
 
     # binary occupancy
-    occ = ~empty_mask
+    occ_mask = ~empty_mask
 
     # truncated SDF
     sdf = udf - eps  # inner is negative
-    inner_mask = occ & (sdf > 0)
+    inner_mask = occ_mask & (sdf > 0)
     sdf[inner_mask] *= -1
 
+    sdf = sdf.cpu().numpy()
     print(f'SDF occupancy ratio: {np.sum(sdf < 0) / sdf.size:.4f}')
 
     # # packbits and compress

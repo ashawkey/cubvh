@@ -114,3 +114,11 @@ class cuBVH():
 
         return distances, face_id, uvw
 
+def floodfill(grid):
+    # grid: torch.Tensor, uint8, [H, W, D]
+    # return: torch.Tensor, int32, [H, W, D], label of the connected component (value can be 0 to H*W*D-1, not remapped!)
+
+    grid = grid.contiguous()
+    if not grid.is_cuda: grid = grid.cuda()
+
+    return _backend.floodfill(grid)

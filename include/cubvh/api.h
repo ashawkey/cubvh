@@ -25,5 +25,8 @@ public:
 
 // function to create an implementation of cuBVH
 cuBVH* create_cuBVH(Ref<const Verts> vertices, Ref<const Trigs> triangles);
+
+// floodfill
+at::Tensor floodfill(at::Tensor grid);
     
 } // namespace cubvh

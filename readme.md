@@ -70,7 +70,6 @@ UDF + flood-fill for possibly non-watertight/single-layer meshes:
 import torch
 import cubvh
 import numpy as np
-from skimage import morphology
 
 resolution = 512
 device = torch.device('cuda')
@@ -86,26 +85,24 @@ grid_points = torch.stack(
     ), dim=-1,
 ) # [N, N, N, 3]
 
+# query dense UDF
 udf, _, _ = BVH.unsigned_distance(grid_points.view(-1, 3), return_uvw=False)
-udf = udf.cpu().numpy().reshape(resolution, resolution, resolution)
-occ = udf < 2 / resolution # tolerance 2 voxels
+udf = udf.view(opt.res, opt.res, opt.res).contiguous()
 
-empty_mask = morphology.flood(occ, (0, 0, 0), connectivity=1) # flood from the corner, which is for sure empty
-occ = ~empty_mask
+# floodfill to get SDF
+occ = udf < 2 / resolution # tolerance 2 voxel
+floodfill_mask = cubvh.floodfill(occ)
+empty_label = floodfill_mask[0, 0, 0].item()
+empty_mask = (floodfill_mask == empty_label)
+occ_mask = ~empty_mask
+sdf = udf - eps  # inner is negative
+inner_mask = occ_mask & (sdf > 0)
+sdf[inner_mask] *= -1
+
+sdf = sdf.cpu().numpy()
+
 ```
 Check [`test/extract_mesh_watertight.py`](test/extract_mesh_watertight.py) for more details.
-
-
-**Renderer:**
-
-Example for a mesh normal renderer by `ray_trace`:
-
-```bash
-python test/renderer.py # default, show a dodecahedron
-python test/renderer.py --mesh example.ply # show any mesh file
-```
-
-https://user-images.githubusercontent.com/25863658/183238748-7ac82808-6cd3-4bb6-867a-9c22f8e3f7dd.mp4
 
 
 ### Acknowledgement

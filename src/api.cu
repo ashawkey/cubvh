@@ -1,9 +1,7 @@
-#pragma once
-
 #include <cubvh/api.h>
-
 #include <cubvh/common.h>
 #include <cubvh/bvh.cuh>
+#include <cubvh/floodfill.cuh>
 
 #include <Eigen/Dense>
 
@@ -74,6 +72,23 @@ public:
     
 cuBVH* create_cuBVH(Ref<const Verts> vertices, Ref<const Trigs> triangles) {
     return new cuBVHImpl{vertices, triangles};
+}
+
+at::Tensor floodfill(at::Tensor grid) {
+
+    // assert grid is uint8_t
+    assert(grid.dtype() == at::ScalarType::Bool);
+
+    const int H = grid.size(0);
+    const int W = grid.size(1);
+    const int D = grid.size(2);
+
+    // allocate mask
+    at::Tensor mask = at::zeros({H, W, D}, at::device(grid.device()).dtype(at::ScalarType::Int));
+
+    _floodfill(grid.data_ptr<bool>(), H, W, D, mask.data_ptr<int32_t>());
+
+    return mask;
 }
 
 } // namespace cubvh

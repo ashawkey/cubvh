@@ -19,4 +19,6 @@ py::class_<cuBVH>(m, "cuBVH")
 
 m.def("create_cuBVH", &create_cuBVH);
 
+m.def("floodfill", &floodfill);
+
 }
