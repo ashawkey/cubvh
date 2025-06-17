@@ -7,7 +7,6 @@ import mcubes
 import trimesh
 import argparse
 import numpy as np
-from skimage import morphology
 
 import torch
 import cubvh
