@@ -79,14 +79,15 @@ at::Tensor floodfill(at::Tensor grid) {
     // assert grid is uint8_t
     assert(grid.dtype() == at::ScalarType::Bool);
 
-    const int H = grid.size(0);
-    const int W = grid.size(1);
-    const int D = grid.size(2);
+    const int B = grid.size(0);
+    const int H = grid.size(1);
+    const int W = grid.size(2);
+    const int D = grid.size(3);
 
     // allocate mask
-    at::Tensor mask = at::zeros({H, W, D}, at::device(grid.device()).dtype(at::ScalarType::Int));
+    at::Tensor mask = at::zeros({B, H, W, D}, at::device(grid.device()).dtype(at::ScalarType::Int));
 
-    _floodfill(grid.data_ptr<bool>(), H, W, D, mask.data_ptr<int32_t>());
+    _floodfill_batch(grid.data_ptr<bool>(), B, H, W, D, mask.data_ptr<int32_t>());
 
     return mask;
 }
