@@ -489,8 +489,8 @@ __global__ void generateTriangles(const int* coords, const float* corners,
         int off2 = __popc(mask & ((1 << e2) - 1));
         Tri tri;
         tri.v0 = baseVert + off0;
-        tri.v1 = baseVert + off1;
-        tri.v2 = baseVert + off2;
+        tri.v1 = baseVert + off2; // flip to make sure the triangle is counter-clockwise
+        tri.v2 = baseVert + off1;
         outTris[triStart + outIdx] = tri;
         outIdx++;
     }
