@@ -34,7 +34,7 @@ using namespace cubvh;
 
 namespace cubvh {
 
-constexpr float MAX_DIST = 100.0f;
+constexpr float MAX_DIST = 1000.0f;
 constexpr float MAX_DIST_SQ = MAX_DIST*MAX_DIST;
 
 

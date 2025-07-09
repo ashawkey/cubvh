@@ -2,6 +2,7 @@
 #include <cubvh/common.h>
 #include <cubvh/bvh.cuh>
 #include <cubvh/floodfill.cuh>
+#include <cubvh/spcumc.cuh>
 
 #include <Eigen/Dense>
 
@@ -91,5 +92,64 @@ at::Tensor floodfill(at::Tensor grid) {
 
     return mask;
 }
+
+std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(
+    at::Tensor coords,        // [N,3] int32, cuda
+    at::Tensor corners,       // [N,8] float32, cuda
+    double iso_d)             // (PyTorch passes double ⇒ cast to float)
+{
+    TORCH_CHECK(coords.is_cuda(),  "coords must reside on CUDA");
+    TORCH_CHECK(corners.is_cuda(), "corners must reside on CUDA");
+    TORCH_CHECK(coords.dtype()  == at::kInt,   "coords must be int32");
+    TORCH_CHECK(corners.dtype() == at::kFloat, "corners must be float32");
+    TORCH_CHECK(coords.sizes().size()  == 2 && coords.size(1)  == 3,
+                "coords must be of shape [N,3]");
+    TORCH_CHECK(corners.sizes().size() == 2 && corners.size(1) == 8,
+                "corners must be of shape [N,8]");
+    TORCH_CHECK(coords.size(0) == corners.size(0),
+                "coords and corners must have the same first-dim (N)");
+
+    // Ensure contiguous memory - PyTorch extensions expect this.
+    coords  = coords.contiguous();
+    corners = corners.contiguous();
+    const int    N   = static_cast<int>(coords.size(0));
+    const int   *d_coords  = coords.data_ptr<int>();
+    const float *d_corners = corners.data_ptr<float>();
+    const float  iso       = static_cast<float>(iso_d);
+
+    // Use the current PyTorch CUDA stream
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
+
+    // --- call the CUDA sparse MC core (header we wrote earlier) -------------------
+    auto mesh = _sparse_marching_cubes(d_coords, d_corners, N, iso, stream);
+    thrust::device_vector<V3f> &verts_vec = mesh.first;
+    thrust::device_vector<Tri> &tris_vec  = mesh.second;
+    const int64_t M = static_cast<int64_t>(verts_vec.size());
+    const int64_t T = static_cast<int64_t>(tris_vec.size());
+
+    // --- create output tensors ----------------------------------------------------
+    auto opts_f = torch::TensorOptions().dtype(torch::kFloat32).device(coords.device());
+    auto opts_i = torch::TensorOptions().dtype(torch::kInt32).device(coords.device());
+
+    at::Tensor verts = at::empty({M, 3}, opts_f);
+    at::Tensor tris  = at::empty({T, 3}, opts_i);
+
+    // Copy GPU→GPU (same stream ⇒ async & cheap)
+    cudaMemcpyAsync(verts.data_ptr<float>(),
+                    thrust::raw_pointer_cast(verts_vec.data()),
+                    M * 3 * sizeof(float),
+                    cudaMemcpyDeviceToDevice, stream);
+
+    cudaMemcpyAsync(tris.data_ptr<int>(),
+                    thrust::raw_pointer_cast(tris_vec.data()),
+                    T * 3 * sizeof(int),
+                    cudaMemcpyDeviceToDevice, stream);
+
+    // Make sure copies finish before we free device_vectors
+    cudaStreamSynchronize(stream);
+
+    return {verts, tris};
+}
+
 
 } // namespace cubvh

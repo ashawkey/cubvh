@@ -127,3 +127,18 @@ def floodfill(grid):
         mask = _backend.floodfill(grid)
 
     return mask
+
+def sparse_marching_cubes(coords, corners, iso):
+    # coords: torch.Tensor, int32, [N, 3]
+    # corners: torch.Tensor, float32, [N, 8]
+    # iso: float
+
+    coords = coords.int().contiguous()
+    corners = corners.float().contiguous()
+
+    if not coords.is_cuda: coords = coords.cuda()
+    if not corners.is_cuda: corners = corners.cuda()
+
+    verts, tris = _backend.sparse_marching_cubes(coords, corners, iso)
+
+    return verts, tris

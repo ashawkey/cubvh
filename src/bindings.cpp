@@ -21,4 +21,6 @@ m.def("create_cuBVH", &create_cuBVH);
 
 m.def("floodfill", &floodfill);
 
+m.def("sparse_marching_cubes", &sparse_marching_cubes);
+
 }

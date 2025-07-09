@@ -1,1 +1,1 @@
-from .api import cuBVH, floodfill
+from .api import cuBVH, floodfill, sparse_marching_cubes
