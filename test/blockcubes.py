@@ -14,7 +14,7 @@ import kiui
 from kiui.mesh_utils import decimate_mesh
 
 """
-Sparcubes implementation.
+Block-sparse marching cubes implementation.
 """
 parser = argparse.ArgumentParser()
 parser.add_argument('test_path', type=str)
@@ -29,7 +29,7 @@ device = torch.device('cuda')
 res = opt.min_res
 res_fine = opt.res
 res_block = res_fine // res
-# eps = 2 / res
+# eps = 2 / res # we don't need coarse eps
 eps_fine = 2 / res_fine
 
 grid_points = torch.stack(
@@ -163,7 +163,7 @@ def run(path):
     occ_fine = udf_fine < eps_fine
     fine_floodfill_mask = cubvh.floodfill(occ_fine) # [N, res_block + 1, res_block + 1, res_block + 1]
 
-    # we need to find out the empty label for each batch (all corners with positive sdf)
+    # we need to find out the empty label for each batch (take care of ALL corners with positive sdf!)
     # get the corners of the fine_floodfill_mask
     fine_floodfill_corners = torch.stack([
         fine_floodfill_mask[:, 0, 0, 0],
@@ -184,10 +184,6 @@ def run(path):
     fine_empty_mask |= (fine_floodfill_corners[:, 5].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 5] > 0).view(-1, 1, 1, 1)
     fine_empty_mask |= (fine_floodfill_corners[:, 6].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 6] > 0).view(-1, 1, 1, 1)
     fine_empty_mask |= (fine_floodfill_corners[:, 7].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 7] > 0).view(-1, 1, 1, 1)
-
-    # active_cells_first_pos_idx = (active_cells_sdf > 0).float().argmax(dim=1) # [N], 0-7
-    # empty_labels = torch.gather(fine_floodfill_corners, dim=1, index=active_cells_first_pos_idx.unsqueeze(1)) # [N]
-    # fine_empty_mask = (fine_floodfill_mask == empty_labels.view(N, 1, 1, 1)) # [N, res_block + 1, res_block + 1, res_block + 1]
     fine_occ_mask = ~fine_empty_mask
 
     # truncated SDF
@@ -256,7 +252,7 @@ def run(path):
 
     if opt.target_faces > 0:
         start_time = time.time()
-        vertices, triangles = decimate_mesh(vertices, triangles, 1e6, optimalplacement=False)
+        vertices, triangles = decimate_mesh(vertices, triangles, 1e6, backend="omo", optimalplacement=False)
         print(f'Decimation time: {time.time() - start_time:.2f}s')
 
     start_time = time.time()
