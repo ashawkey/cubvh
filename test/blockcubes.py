@@ -234,6 +234,17 @@ def run(path):
 
     print(f'Fine level time: {time.time() - start_time:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')
 
+    ### TODO save the sparse voxels as output format.
+
+    # clean up to save memory for spcumc
+    del BVH
+    del active_cells_fine_grid_points
+    del udf, occ, floodfill_mask, empty_mask, sdf
+    del active_cells, active_cells_index, active_cell_mask, border_cell_mask
+    del udf_fine, occ_fine, fine_floodfill_mask, fine_empty_mask, fine_occ_mask, sdf_fine
+    del fine_active_cells_index_local, fine_active_cells_local, fine_active_cells_mask
+    torch.cuda.empty_cache()
+
     ### now, convert them back to the mesh!
     start_time = time.time()
     vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0)
