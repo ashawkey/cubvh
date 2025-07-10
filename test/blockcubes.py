@@ -18,8 +18,8 @@ Sparcubes implementation.
 """
 parser = argparse.ArgumentParser()
 parser.add_argument('test_path', type=str)
-parser.add_argument('--min_res', type=int, default=256)
-parser.add_argument('--res', type=int, default=1024)
+parser.add_argument('--min_res', type=int, default=512)
+parser.add_argument('--res', type=int, default=2048)
 parser.add_argument('--workspace', type=str, default='output2')
 parser.add_argument('--target_faces', type=int, default=-1)
 opt = parser.parse_args()
@@ -115,8 +115,7 @@ def run(path):
     active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
     active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
 
-    # also keep voxels where the true border lies in
-    # TODO: this is not correct algorithm... have false positives...
+    # also keep voxels where the true border lies in (similar to a dilation)
     cube_diagonal_length = math.sqrt(3) / res # half of the cube diagonal length
     border_cell_mask =  torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
     border_cell_mask = torch.minimum(border_cell_mask, udf[:-1, 1:, :-1])
@@ -129,9 +128,6 @@ def run(path):
     # center-check
     udf_center = torch.nn.functional.avg_pool3d(udf[None, None], kernel_size=2, stride=1).squeeze()
     border_cell_mask &= (udf_center <= cube_diagonal_length)
-    # sign-check
-    border_cell_mask &= (sdf_000 > 0) & (sdf_001 > 0) & (sdf_010 > 0) & (sdf_011 > 0) & (sdf_100 > 0) & (sdf_101 > 0) & (sdf_110 > 0) & (sdf_111 > 0)
-
     active_cell_mask |= border_cell_mask
 
     active_cells_index = torch.nonzero(active_cell_mask, as_tuple=True) # ([N], [N], [N])
@@ -167,8 +163,7 @@ def run(path):
     occ_fine = udf_fine < eps_fine
     fine_floodfill_mask = cubvh.floodfill(occ_fine) # [N, res_block + 1, res_block + 1, res_block + 1]
 
-    # we need to find out the empty label for each batch (any grid with positive sdf)
-    active_cells_first_pos_idx = (active_cells_sdf > 0).float().argmax(dim=1) # [N], 0-7
+    # we need to find out the empty label for each batch (all corners with positive sdf)
     # get the corners of the fine_floodfill_mask
     fine_floodfill_corners = torch.stack([
         fine_floodfill_mask[:, 0, 0, 0],
@@ -180,9 +175,19 @@ def run(path):
         fine_floodfill_mask[:, -1, -1, -1],
         fine_floodfill_mask[:, 0, -1, -1],
     ], dim=1) # [N, 8]
-    # gather the empty label for each batch
-    empty_labels = torch.gather(fine_floodfill_corners, dim=1, index=active_cells_first_pos_idx.unsqueeze(1)) # [N]
-    fine_empty_mask = (fine_floodfill_mask == empty_labels.view(N, 1, 1, 1)) # [N, res_block + 1, res_block + 1, res_block + 1]
+    fine_empty_mask = torch.zeros_like(fine_floodfill_mask, dtype=torch.bool) # [N, res_block + 1, res_block + 1, res_block + 1]
+    fine_empty_mask |= (fine_floodfill_corners[:, 0].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 0] > 0).view(-1, 1, 1, 1)
+    fine_empty_mask |= (fine_floodfill_corners[:, 1].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 1] > 0).view(-1, 1, 1, 1)
+    fine_empty_mask |= (fine_floodfill_corners[:, 2].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 2] > 0).view(-1, 1, 1, 1)
+    fine_empty_mask |= (fine_floodfill_corners[:, 3].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 3] > 0).view(-1, 1, 1, 1)
+    fine_empty_mask |= (fine_floodfill_corners[:, 4].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 4] > 0).view(-1, 1, 1, 1) 
+    fine_empty_mask |= (fine_floodfill_corners[:, 5].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 5] > 0).view(-1, 1, 1, 1)
+    fine_empty_mask |= (fine_floodfill_corners[:, 6].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 6] > 0).view(-1, 1, 1, 1)
+    fine_empty_mask |= (fine_floodfill_corners[:, 7].view(-1, 1, 1, 1) == fine_floodfill_mask) & (active_cells_sdf[:, 7] > 0).view(-1, 1, 1, 1)
+
+    # active_cells_first_pos_idx = (active_cells_sdf > 0).float().argmax(dim=1) # [N], 0-7
+    # empty_labels = torch.gather(fine_floodfill_corners, dim=1, index=active_cells_first_pos_idx.unsqueeze(1)) # [N]
+    # fine_empty_mask = (fine_floodfill_mask == empty_labels.view(N, 1, 1, 1)) # [N, res_block + 1, res_block + 1, res_block + 1]
     fine_occ_mask = ~fine_empty_mask
 
     # truncated SDF
@@ -232,7 +237,7 @@ def run(path):
     ### now, convert them back to the mesh!
     start_time = time.time()
     vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0)
-    vertices = vertices / (res_fine - 1.0) * 2 - 1
+    vertices = vertices / res_fine * 2 - 1
     vertices = vertices.detach().cpu().numpy()
     triangles = triangles.detach().cpu().numpy()
     kiui.lo(vertices, triangles)
