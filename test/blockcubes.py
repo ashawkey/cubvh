@@ -4,6 +4,7 @@ import tqdm
 import trimesh
 import argparse
 import time
+import math
 
 import torch
 import cubvh
@@ -17,17 +18,18 @@ Sparcubes implementation.
 parser = argparse.ArgumentParser()
 parser.add_argument('test_path', type=str)
 parser.add_argument('--min_res', type=int, default=512)
-parser.add_argument('--max_res', type=int, default=2048)
-# parser.add_argument('--min_res', type=int, default=32)
-# parser.add_argument('--max_res', type=int, default=256)
+parser.add_argument('--res', type=int, default=2048)
 parser.add_argument('--workspace', type=str, default='output2')
+parser.add_argument('--target_num_faces', type=int, default=1e6)
 opt = parser.parse_args()
 
 device = torch.device('cuda')
 
 res = opt.min_res
-res_fine = opt.max_res
-res_sub = res_fine // res
+res_fine = opt.res
+res_block = res_fine // res
+eps = 2 / res # half of the diagonal length of a cube, slightly larger
+eps_fine = 2 / res_fine
 
 grid_points = torch.stack(
     torch.meshgrid(
@@ -40,12 +42,12 @@ grid_points = torch.stack(
 
 subgrid_offsets = torch.stack(
     torch.meshgrid(
-        torch.linspace(-1/res, 1/res, res_sub + 1, device=device),
-        torch.linspace(-1/res, 1/res, res_sub + 1, device=device),
-        torch.linspace(-1/res, 1/res, res_sub + 1, device=device),
+        torch.linspace(-1/res, 1/res, res_block + 1, device=device),
+        torch.linspace(-1/res, 1/res, res_block + 1, device=device),
+        torch.linspace(-1/res, 1/res, res_block + 1, device=device),
         indexing="ij",
     ), dim=-1,
-) # [res_sub + 1, res_sub + 1, res_sub + 1, 3]
+) # [res_block + 1, res_block + 1, res_block + 1, 3]
 
 def box_normalize(vertices, bound=0.95):
     bmin = vertices.min(axis=0)
@@ -56,6 +58,7 @@ def box_normalize(vertices, bound=0.95):
 
 def run(path):
 
+    name = os.path.splitext(os.path.basename(path))[0]
     mesh = trimesh.load(path, process=False, force='mesh')
     mesh.vertices = box_normalize(mesh.vertices, bound=0.95)
 
@@ -69,20 +72,18 @@ def run(path):
     ### coarsest resolution: dense grid query
     start_time = time.time()
     # UDF
-    eps = 2 / res
     udf, _, _ = BVH.unsigned_distance(grid_points.contiguous().view(-1, 3), return_uvw=False)
-    kiui.lo(grid_points.view(-1, 3), udf)
 
     # flood fill
     udf = udf.view(res + 1, res + 1, res + 1).contiguous()
-    occ = udf < eps
+    occ = udf < eps_fine # directly use eps_fine here!
     floodfill_mask = cubvh.floodfill(occ)
     empty_label = floodfill_mask[0, 0, 0].item()
     empty_mask = (floodfill_mask == empty_label)
     occ_mask = ~empty_mask
 
     # truncated SDF
-    sdf = udf - eps  # inner is negative
+    sdf = udf - eps_fine  # inner is negative
     inner_mask = occ_mask & (sdf > 0)
     sdf[inner_mask] *= -1  # [res + 1, res + 1, res + 1], numpy float32
 
@@ -96,20 +97,33 @@ def run(path):
     sdf_110 = sdf[1:, 1:, :-1]
     sdf_111 = sdf[1:, 1:, 1:]
     
-    # only keep voxels where the 8 corners have different sign
-    sdf_mask = torch.sign(sdf_000) != torch.sign(sdf_001)
-    sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_010)
-    sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_011)
-    sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_100)
-    sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_101)
-    sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
-    sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
+    # keep voxels where the 8 corners have different sign
+    active_cell_mask = torch.sign(sdf_000) != torch.sign(sdf_001)
+    active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_010)
+    active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_011)
+    active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_100)
+    active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_101)
+    active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
+    active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
 
-    active_cells_index = torch.nonzero(sdf_mask, as_tuple=True) # ([N], [N], [N])
+    # also keep voxels where the true border lies in (all 8 corner udf <= 2 * eps)
+    border_cell_mask = torch.abs(sdf_000) <= 2 * eps
+    border_cell_mask &= torch.abs(sdf_001) <= 2 * eps
+    border_cell_mask &= torch.abs(sdf_010) <= 2 * eps
+    border_cell_mask &= torch.abs(sdf_011) <= 2 * eps
+    border_cell_mask &= torch.abs(sdf_100) <= 2 * eps
+    border_cell_mask &= torch.abs(sdf_101) <= 2 * eps
+    border_cell_mask &= torch.abs(sdf_110) <= 2 * eps
+    border_cell_mask &= torch.abs(sdf_111) <= 2 * eps
+
+    active_cell_mask |= border_cell_mask
+
+    active_cells_index = torch.nonzero(active_cell_mask, as_tuple=True) # ([N], [N], [N])
     active_cells = torch.stack(active_cells_index, dim=-1) # [N, 3]
 
     active_cells_sdf = torch.stack([
-        sdf_000[active_cells_index],
+        # order matters! this is the standard marching cubes order of 8 corners
+        sdf_000[active_cells_index], 
         sdf_100[active_cells_index],
         sdf_110[active_cells_index],
         sdf_010[active_cells_index],
@@ -124,20 +138,34 @@ def run(path):
 
     print(f'Coarse level time: {time.time() - start_time:.2f}s, active cells: {N} / {res ** 3} = {N / res ** 3 * 100:.2f}%')
 
+    # debug: save the coarse mesh
+    # kiui.lo(active_cells_sdf, active_cells)
+    start_time = time.time()
+    vertices, triangles = cubvh.sparse_marching_cubes(active_cells, active_cells_sdf, 0)
+    vertices = vertices / (res - 1.0) * 2 - 1
+    vertices = vertices.detach().cpu().numpy()
+    triangles = triangles.detach().cpu().numpy()
+    kiui.lo(vertices, triangles)
+    print(f'Coarse Mesh extraction time: {time.time() - start_time:.2f}s')
+    if opt.target_num_faces > 0:
+        start_time = time.time()
+        vertices, triangles = decimate_mesh(vertices, triangles, 1e6, optimalplacement=False)
+        print(f'Coarse Decimation time: {time.time() - start_time:.2f}s')    
+    mesh = trimesh.Trimesh(vertices, triangles)
+    mesh.export(f'{opt.workspace}/{name}_coarse.ply')
+
     # construct fine grid points only for the active cells
     start_time = time.time()
-    active_cells_fine_grid_points = active_cells_center.view(N, 1, 1, 1, 3) + subgrid_offsets.view(1, res_sub + 1, res_sub + 1, res_sub + 1, 3) # [N, res_sub + 1, res_sub + 1, res_sub + 1, 3]
-    active_cells_fine_grid_points = active_cells_fine_grid_points.view(-1, 3) # [N * (res_sub + 1) ** 3, 3]
+    active_cells_fine_grid_points = active_cells_center.view(N, 1, 1, 1, 3) + subgrid_offsets.view(1, res_block + 1, res_block + 1, res_block + 1, 3) # [N, res_block + 1, res_block + 1, res_block + 1, 3]
+    active_cells_fine_grid_points = active_cells_fine_grid_points.view(-1, 3) # [N * (res_block + 1) ** 3, 3]
 
     # query new SDF values
-    # eps_fine = 2 / res_fine
     udf_fine, _, _ = BVH.unsigned_distance(active_cells_fine_grid_points, return_uvw=False)
-    kiui.lo(active_cells_fine_grid_points, udf_fine)
     
     # batched flood fill
-    udf_fine = udf_fine.view(N, res_sub + 1, res_sub + 1, res_sub + 1).contiguous()
-    occ_fine = udf_fine < eps
-    fine_floodfill_mask = cubvh.floodfill(occ_fine) # [N, res_sub + 1, res_sub + 1, res_sub + 1]
+    udf_fine = udf_fine.view(N, res_block + 1, res_block + 1, res_block + 1).contiguous()
+    occ_fine = udf_fine < eps_fine
+    fine_floodfill_mask = cubvh.floodfill(occ_fine) # [N, res_block + 1, res_block + 1, res_block + 1]
 
     # we need to find out the empty label for each batch (any grid with positive sdf)
     active_cells_first_pos_idx = (active_cells_sdf > 0).float().argmax(dim=1) # [N], 0-7
@@ -154,13 +182,13 @@ def run(path):
     ], dim=1) # [N, 8]
     # gather the empty label for each batch
     empty_labels = torch.gather(fine_floodfill_corners, dim=1, index=active_cells_first_pos_idx.unsqueeze(1)) # [N]
-    fine_empty_mask = (fine_floodfill_mask == empty_labels.view(N, 1, 1, 1)) # [N, res_sub + 1, res_sub + 1, res_sub + 1]
+    fine_empty_mask = (fine_floodfill_mask == empty_labels.view(N, 1, 1, 1)) # [N, res_block + 1, res_block + 1, res_block + 1]
     fine_occ_mask = ~fine_empty_mask
 
     # truncated SDF
-    sdf_fine = udf_fine - eps  # inner is negative
+    sdf_fine = udf_fine - eps_fine  # inner is negative
     fine_inner_mask = fine_occ_mask & (sdf_fine > 0)
-    sdf_fine[fine_inner_mask] *= -1  # [N, res_sub + 1, res_sub + 1, res_sub + 1]
+    sdf_fine[fine_inner_mask] *= -1  # [N, res_block + 1, res_block + 1, res_block + 1]
 
     # convert to sparse voxels again
     sdf_fine_000 = sdf_fine[:, :-1, :-1, :-1]
@@ -172,17 +200,16 @@ def run(path):
     sdf_fine_110 = sdf_fine[:, 1:, 1:, :-1]
     sdf_fine_111 = sdf_fine[:, 1:, 1:, 1:]
 
-    sdf_fine_mask = torch.sign(sdf_fine_000) != torch.sign(sdf_fine_001)
-    sdf_fine_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_010)
-    sdf_fine_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_011)
-    sdf_fine_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_100)
-    sdf_fine_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_101)
-    sdf_fine_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_110)
-    sdf_fine_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_111)
+    # this time we only keep the active cells
+    fine_active_cells_mask = torch.sign(sdf_fine_000) != torch.sign(sdf_fine_001)
+    fine_active_cells_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_010)
+    fine_active_cells_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_011)
+    fine_active_cells_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_100)
+    fine_active_cells_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_101)
+    fine_active_cells_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_110)
+    fine_active_cells_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_111)
 
-    kiui.lo(sdf_fine_mask, sdf_fine)
-
-    fine_active_cells_index_local = torch.nonzero(sdf_fine_mask, as_tuple=True) # ([M], [M], [M], [M])
+    fine_active_cells_index_local = torch.nonzero(fine_active_cells_mask, as_tuple=True) # ([M], [M], [M], [M])
     fine_active_cells_local = torch.stack(fine_active_cells_index_local[1:], dim=-1) # [M, 3]
     M = fine_active_cells_local.shape[0]
 
@@ -197,33 +224,31 @@ def run(path):
         sdf_fine_011[fine_active_cells_index_local],
     ], dim=-1) # [M, 8]
 
-
     # convert to global fine index
-    fine_active_cells_global = res_sub * active_cells[fine_active_cells_index_local[0]] + fine_active_cells_local # [M, 3]
+    fine_active_cells_global = res_block * active_cells[fine_active_cells_index_local[0]] + fine_active_cells_local # [M, 3]
 
     print(f'Fine level time: {time.time() - start_time:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')
 
     # TODO: save fine_active_cells_sdf and fine_active_cells_global 
-    kiui.lo(fine_active_cells_sdf, fine_active_cells_global)
+    # kiui.lo(fine_active_cells_sdf, fine_active_cells_global)
 
     ### now, convert them back to the mesh!
     start_time = time.time()
     vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0)
-    vertices = vertices / (sdf.shape[-1] - 1.0) * 2 - 1
+    vertices = vertices / (res_fine - 1.0) * 2 - 1
     vertices = vertices.detach().cpu().numpy()
     triangles = triangles.detach().cpu().numpy()
     kiui.lo(vertices, triangles)
     print(f'Mesh extraction time: {time.time() - start_time:.2f}s')
 
-    start_time = time.time()
-    vertices, triangles = decimate_mesh(vertices, triangles, 1e6)
-    print(f'Decimation time: {time.time() - start_time:.2f}s')
+    if opt.target_num_faces > 0:
+        start_time = time.time()
+        vertices, triangles = decimate_mesh(vertices, triangles, 1e6, optimalplacement=False)
+        print(f'Decimation time: {time.time() - start_time:.2f}s')
 
     start_time = time.time()
     mesh = trimesh.Trimesh(vertices, triangles)
-
-    name = os.path.splitext(os.path.basename(path))[0]
-    mesh.export(f'{opt.workspace}/{name}.obj')
+    mesh.export(f'{opt.workspace}/{name}.ply')
 
 os.makedirs(opt.workspace, exist_ok=True)
 
