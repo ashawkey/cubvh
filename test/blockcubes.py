@@ -5,6 +5,7 @@ import trimesh
 import argparse
 import time
 import math
+import numpy as np
 
 import torch
 import cubvh
@@ -17,10 +18,10 @@ Sparcubes implementation.
 """
 parser = argparse.ArgumentParser()
 parser.add_argument('test_path', type=str)
-parser.add_argument('--min_res', type=int, default=512)
-parser.add_argument('--res', type=int, default=2048)
+parser.add_argument('--min_res', type=int, default=256)
+parser.add_argument('--res', type=int, default=1024)
 parser.add_argument('--workspace', type=str, default='output2')
-parser.add_argument('--target_num_faces', type=int, default=1e6)
+parser.add_argument('--target_faces', type=int, default=-1)
 opt = parser.parse_args()
 
 device = torch.device('cuda')
@@ -28,7 +29,7 @@ device = torch.device('cuda')
 res = opt.min_res
 res_fine = opt.res
 res_block = res_fine // res
-eps = 2 / res # half of the diagonal length of a cube, slightly larger
+# eps = 2 / res
 eps_fine = 2 / res_fine
 
 grid_points = torch.stack(
@@ -49,6 +50,14 @@ subgrid_offsets = torch.stack(
     ), dim=-1,
 ) # [res_block + 1, res_block + 1, res_block + 1, 3]
 
+def sphere_normalize(vertices):
+    bmin = vertices.min(axis=0)
+    bmax = vertices.max(axis=0)
+    bcenter = (bmax + bmin) / 2
+    radius = np.linalg.norm(vertices - bcenter, axis=-1).max()
+    vertices = (vertices - bcenter) / (radius)  # to [-1, 1]
+    return vertices
+
 def box_normalize(vertices, bound=0.95):
     bmin = vertices.min(axis=0)
     bmax = vertices.max(axis=0)
@@ -61,7 +70,7 @@ def run(path):
     name = os.path.splitext(os.path.basename(path))[0]
     mesh = trimesh.load(path, process=False, force='mesh')
     mesh.vertices = box_normalize(mesh.vertices, bound=0.95)
-
+    # mesh.vertices = sphere_normalize(mesh.vertices)
     vertices = torch.from_numpy(mesh.vertices).float().to(device)
     triangles = torch.from_numpy(mesh.faces).long().to(device)
 
@@ -106,15 +115,22 @@ def run(path):
     active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
     active_cell_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
 
-    # also keep voxels where the true border lies in (all 8 corner udf <= 2 * eps)
-    border_cell_mask = torch.abs(sdf_000) <= 2 * eps
-    border_cell_mask &= torch.abs(sdf_001) <= 2 * eps
-    border_cell_mask &= torch.abs(sdf_010) <= 2 * eps
-    border_cell_mask &= torch.abs(sdf_011) <= 2 * eps
-    border_cell_mask &= torch.abs(sdf_100) <= 2 * eps
-    border_cell_mask &= torch.abs(sdf_101) <= 2 * eps
-    border_cell_mask &= torch.abs(sdf_110) <= 2 * eps
-    border_cell_mask &= torch.abs(sdf_111) <= 2 * eps
+    # also keep voxels where the true border lies in
+    # TODO: this is not correct algorithm... have false positives...
+    cube_diagonal_length = math.sqrt(3) / res # half of the cube diagonal length
+    border_cell_mask =  torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
+    border_cell_mask = torch.minimum(border_cell_mask, udf[:-1, 1:, :-1])
+    border_cell_mask = torch.minimum(border_cell_mask, udf[:-1, 1:, 1:])
+    border_cell_mask = torch.minimum(border_cell_mask, udf[1:, :-1, :-1])
+    border_cell_mask = torch.minimum(border_cell_mask, udf[1:, :-1, 1:])
+    border_cell_mask = torch.minimum(border_cell_mask, udf[1:, 1:, :-1])
+    border_cell_mask = torch.minimum(border_cell_mask, udf[1:, 1:, 1:])
+    border_cell_mask = border_cell_mask <= cube_diagonal_length
+    # center-check
+    udf_center = torch.nn.functional.avg_pool3d(udf[None, None], kernel_size=2, stride=1).squeeze()
+    border_cell_mask &= (udf_center <= cube_diagonal_length)
+    # sign-check
+    border_cell_mask &= (sdf_000 > 0) & (sdf_001 > 0) & (sdf_010 > 0) & (sdf_011 > 0) & (sdf_100 > 0) & (sdf_101 > 0) & (sdf_110 > 0) & (sdf_111 > 0)
 
     active_cell_mask |= border_cell_mask
 
@@ -137,22 +153,6 @@ def run(path):
     N = active_cells.shape[0]
 
     print(f'Coarse level time: {time.time() - start_time:.2f}s, active cells: {N} / {res ** 3} = {N / res ** 3 * 100:.2f}%')
-
-    # debug: save the coarse mesh
-    # kiui.lo(active_cells_sdf, active_cells)
-    start_time = time.time()
-    vertices, triangles = cubvh.sparse_marching_cubes(active_cells, active_cells_sdf, 0)
-    vertices = vertices / (res - 1.0) * 2 - 1
-    vertices = vertices.detach().cpu().numpy()
-    triangles = triangles.detach().cpu().numpy()
-    kiui.lo(vertices, triangles)
-    print(f'Coarse Mesh extraction time: {time.time() - start_time:.2f}s')
-    if opt.target_num_faces > 0:
-        start_time = time.time()
-        vertices, triangles = decimate_mesh(vertices, triangles, 1e6, optimalplacement=False)
-        print(f'Coarse Decimation time: {time.time() - start_time:.2f}s')    
-    mesh = trimesh.Trimesh(vertices, triangles)
-    mesh.export(f'{opt.workspace}/{name}_coarse.ply')
 
     # construct fine grid points only for the active cells
     start_time = time.time()
@@ -229,9 +229,6 @@ def run(path):
 
     print(f'Fine level time: {time.time() - start_time:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')
 
-    # TODO: save fine_active_cells_sdf and fine_active_cells_global 
-    # kiui.lo(fine_active_cells_sdf, fine_active_cells_global)
-
     ### now, convert them back to the mesh!
     start_time = time.time()
     vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0)
@@ -241,7 +238,7 @@ def run(path):
     kiui.lo(vertices, triangles)
     print(f'Mesh extraction time: {time.time() - start_time:.2f}s')
 
-    if opt.target_num_faces > 0:
+    if opt.target_faces > 0:
         start_time = time.time()
         vertices, triangles = decimate_mesh(vertices, triangles, 1e6, optimalplacement=False)
         print(f'Decimation time: {time.time() - start_time:.2f}s')

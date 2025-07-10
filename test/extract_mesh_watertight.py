@@ -49,14 +49,14 @@ def box_normalize(vertices, bound=0.95):
     bmin = vertices.min(axis=0)
     bmax = vertices.max(axis=0)
     bcenter = (bmax + bmin) / 2
-    vertices = bound * (vertices - bcenter) / (bmax - bmin).max()
+    vertices = 2 * bound * (vertices - bcenter) / (bmax - bmin).max()
     return vertices
 
 
 def run(path):
 
     mesh = trimesh.load(path, process=False, force='mesh')
-    mesh.vertices = sphere_normalize(mesh.vertices)
+    mesh.vertices = box_normalize(mesh.vertices, bound=0.95)
     vertices = torch.from_numpy(mesh.vertices).float().to(device)
     triangles = torch.from_numpy(mesh.faces).long().to(device)
 
@@ -109,6 +109,7 @@ def run(path):
         sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_101)
         sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
         sdf_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
+        
         active_cells_index = torch.nonzero(sdf_mask, as_tuple=True) # ([N], [N], [N])
         active_cells = torch.stack(active_cells_index, dim=-1) # [N, 3]
         
