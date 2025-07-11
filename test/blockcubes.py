@@ -20,12 +20,15 @@ parser = argparse.ArgumentParser()
 parser.add_argument('test_path', type=str)
 parser.add_argument('--min_res', type=int, default=512)
 parser.add_argument('--res', type=int, default=2048)
-parser.add_argument('--workspace', type=str, default='output2')
-parser.add_argument('--target_faces', type=int, default=-1)
+parser.add_argument('--workspace', type=str, default='output')
+parser.add_argument('--target_faces', type=int, default=1000000)
+parser.add_argument('--save', action='store_true')
+parser.add_argument('--extract_mesh', action='store_true')
 opt = parser.parse_args()
 
 device = torch.device('cuda')
 
+## constants
 res = opt.min_res
 res_fine = opt.res
 res_block = res_fine // res
@@ -50,6 +53,7 @@ subgrid_offsets = torch.stack(
     ), dim=-1,
 ) # [res_block + 1, res_block + 1, res_block + 1, 3]
 
+### normalization utils
 def sphere_normalize(vertices):
     bmin = vertices.min(axis=0)
     bmax = vertices.max(axis=0)
@@ -65,9 +69,79 @@ def box_normalize(vertices, bound=0.95):
     vertices = 2 * bound * (vertices - bcenter) / (bmax - bmin).max()
     return vertices
 
+### quantization utils
+def compress_coords(coords: np.ndarray, res: int):
+    # flatten [N, 3] coords to a single uint64 (since 2048^3 exceeds uint32)
+    coords = coords.astype(np.uint64)
+    return coords[:, 0] * res * res + coords[:, 1] * res + coords[:, 2]
+
+def decompress_coords(compressed: np.ndarray, res: int):
+    # decompress a single uint64 to [3] coords
+    x = compressed // (res * res)
+    y = (compressed % (res * res)) // res
+    z = compressed % res # [N]
+    return np.stack([x, y, z], axis=-1) # [N, 3]
+
+def quantize_sdf(sdf: np.ndarray, resolution: int):  
+    """  
+    Parameters  
+    ----------  
+    sdf : (N, 8) float32  
+        Signed-distance values at the 8 cube corners of every voxel.  
+    resolution : int
+        Resolution of the grid. assume normalized sdf to [-1, 1].
+
+    Returns  
+    -------  
+    packed : (N,) uint64  
+        Eight 8-bit codes per voxel packed little-endian into a 64-bit word.  
+        Corner 0 ends up in the least-significant byte, corner 7 in the MSB.  
+    delta : float  
+        Quantisation step so that   reconstructed_f = code * delta.  
+        Needed by `dequantize_sdf`.  
+    """  
+    if sdf.ndim != 2 or sdf.shape[1] != 8:  
+        raise ValueError("sdf must have shape [N, 8]")
+    delta = 2 / resolution * math.sqrt(3) / 127.0
+    mag   = np.rint(np.clip(np.abs(sdf) / delta, 0, 127)).astype(np.uint8)  
+    sign  = (sdf < 0).astype(np.uint8) << 7                      # 0x80 if inside  
+    codes = (sign | mag).astype(np.uint8)        # shape (N, 8), dtype uint8
+    shifts = (np.arange(8, dtype=np.uint64) * 8)[None, :]        # (1, 8)  
+    packed = np.sum((codes.astype(np.uint64) << shifts), axis=1, dtype=np.uint64)  
+    return packed, delta
+
+
+def dequantize_sdf(packed: np.ndarray, resolution: int) -> np.ndarray:  
+    """  
+    Inverse of quantize_sdf.
+
+    Parameters  
+    ----------  
+    packed : (N,) uint64  
+        Array that came out of quantize_sdf.  
+    resolution : int
+        Resolution of the grid. assume normalized sdf to [-1, 1].
+
+    Returns  
+    -------  
+    sdf : (N, 8) float32  
+        Reconstructed signed-distance samples.  
+    """  
+    if packed.dtype != np.uint64:  
+        raise ValueError("packed must be dtype uint64")
+    delta = 2 / resolution * math.sqrt(3) / 127.0
+    shifts = (np.arange(8, dtype=np.uint64) * 8)[None, :]        # (1, 8)  
+    bytes_ = ((packed[:, None] >> shifts) & 0xFF).astype(np.uint8)   # (N, 8)
+    sign   = ((bytes_ >> 7) & 1).astype(np.int8)    # 0 outside, 1 inside  
+    mag    = (bytes_ & 0x7F).astype(np.float32)     # 0 … 127
+    sdf    = mag * delta  
+    sdf[sign == 1] *= -1.0  
+    return sdf
+
+### main function
 def run(path):
 
-    name = os.path.splitext(os.path.basename(path))[0]
+    name = os.path.splitext(os.path.basename(path))[0] + "_" + str(res) + "_" + str(res_fine)
     mesh = trimesh.load(path, process=False, force='mesh')
     mesh.vertices = box_normalize(mesh.vertices, bound=0.95)
     # mesh.vertices = sphere_normalize(mesh.vertices)
@@ -231,33 +305,56 @@ def run(path):
     print(f'Fine level time: {time.time() - start_time:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')
 
     ### TODO save the sparse voxels as output format.
+    if opt.save:
+        kiui.lo(fine_active_cells_global, fine_active_cells_sdf)
+        fine_active_cells_np = fine_active_cells_global.cpu().numpy()
+        fine_active_cells_sdf_np = fine_active_cells_sdf.cpu().numpy()
 
-    # clean up to save memory for spcumc
-    del BVH
-    del active_cells_fine_grid_points
-    del udf, occ, floodfill_mask, empty_mask, sdf
-    del active_cells, active_cells_index, active_cell_mask, border_cell_mask
-    del udf_fine, occ_fine, fine_floodfill_mask, fine_empty_mask, fine_occ_mask, sdf_fine
-    del fine_active_cells_index_local, fine_active_cells_local, fine_active_cells_mask
-    torch.cuda.empty_cache()
+        # quantize
+        fine_active_cells_np = compress_coords(fine_active_cells_np, res_fine)
+        fine_active_cells_sdf_np, quant_delta = quantize_sdf(fine_active_cells_sdf_np, res_fine)
+        # kiui.lo(fine_active_cells_np, fine_active_cells_sdf_np)
+
+        # save
+        # np.savez_compressed(f'{opt.workspace}/{name}.npz', active_cells=fine_active_cells_np, active_cells_sdf=fine_active_cells_sdf_np)
+        np.savez(f'{opt.workspace}/{name}.npz', active_cells=fine_active_cells_np, active_cells_sdf=fine_active_cells_sdf_np)
+        
+        # load
+        data = np.load(f'{opt.workspace}/{name}.npz')
+        fine_active_cells_np = data['active_cells']
+        fine_active_cells_sdf_np = data['active_cells_sdf']
+        
+        # unquantize
+        fine_active_cells_global = torch.from_numpy(decompress_coords(fine_active_cells_np, res_fine)).int().to(device)
+        fine_active_cells_sdf = torch.from_numpy(dequantize_sdf(fine_active_cells_sdf_np, res_fine)).float().to(device)
+        kiui.lo(fine_active_cells_global, fine_active_cells_sdf)
 
     ### now, convert them back to the mesh!
-    start_time = time.time()
-    vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0)
-    vertices = vertices / res_fine * 2 - 1
-    vertices = vertices.detach().cpu().numpy()
-    triangles = triangles.detach().cpu().numpy()
-    kiui.lo(vertices, triangles)
-    print(f'Mesh extraction time: {time.time() - start_time:.2f}s')
-
-    if opt.target_faces > 0:
+    if opt.extract_mesh:
+        # clean up to save memory for spcumc
+        del BVH
+        del active_cells_fine_grid_points
+        del udf, occ, floodfill_mask, empty_mask, sdf
+        del active_cells, active_cells_index, active_cell_mask, border_cell_mask
+        del udf_fine, occ_fine, fine_floodfill_mask, fine_empty_mask, fine_occ_mask, sdf_fine
+        del fine_active_cells_index_local, fine_active_cells_local, fine_active_cells_mask
+        torch.cuda.empty_cache()
+        
         start_time = time.time()
-        vertices, triangles = decimate_mesh(vertices, triangles, 1e6, backend="omo", optimalplacement=False)
-        print(f'Decimation time: {time.time() - start_time:.2f}s')
+        vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0)
+        vertices = vertices / res_fine * 2 - 1
+        vertices = vertices.detach().cpu().numpy()
+        triangles = triangles.detach().cpu().numpy()
+        print(f'Mesh extraction time: {time.time() - start_time:.2f}s')
 
-    start_time = time.time()
-    mesh = trimesh.Trimesh(vertices, triangles)
-    mesh.export(f'{opt.workspace}/{name}.ply')
+        if opt.target_faces > 0:
+            start_time = time.time()
+            vertices, triangles = decimate_mesh(vertices, triangles, 1e6, backend="omo")
+            print(f'Decimation time: {time.time() - start_time:.2f}s')
+
+        start_time = time.time()
+        mesh = trimesh.Trimesh(vertices, triangles)
+        mesh.export(f'{opt.workspace}/{name}.ply')
 
 os.makedirs(opt.workspace, exist_ok=True)
 
