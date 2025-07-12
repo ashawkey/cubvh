@@ -6,7 +6,7 @@ import argparse
 import time
 import math
 import numpy as np
-
+from typing import Optional
 import torch
 import cubvh
 
@@ -111,7 +111,7 @@ def quantize_sdf(sdf: np.ndarray, resolution: int):
     return packed, delta
 
 
-def dequantize_sdf(packed: np.ndarray, resolution: int) -> np.ndarray:  
+def dequantize_sdf(packed: np.ndarray, resolution: Optional[int] = None) -> np.ndarray:  
     """  
     Inverse of quantize_sdf.
 
@@ -120,7 +120,8 @@ def dequantize_sdf(packed: np.ndarray, resolution: int) -> np.ndarray:
     packed : (N,) uint64  
         Array that came out of quantize_sdf.  
     resolution : int
-        Resolution of the grid. assume normalized sdf to [-1, 1].
+        Resolution of the grid, if provided, will be used to compute the delta and reconstruct the exact sdf.
+        Otherwise, we'll return truncated & normalized sdf to [-1, 1].
 
     Returns  
     -------  
@@ -129,12 +130,12 @@ def dequantize_sdf(packed: np.ndarray, resolution: int) -> np.ndarray:
     """  
     if packed.dtype != np.uint64:  
         raise ValueError("packed must be dtype uint64")
-    delta = 2 / resolution * math.sqrt(3) / 127.0
     shifts = (np.arange(8, dtype=np.uint64) * 8)[None, :]        # (1, 8)  
     bytes_ = ((packed[:, None] >> shifts) & 0xFF).astype(np.uint8)   # (N, 8)
     sign   = ((bytes_ >> 7) & 1).astype(np.int8)    # 0 outside, 1 inside  
-    mag    = (bytes_ & 0x7F).astype(np.float32)     # 0 … 127
-    sdf    = mag * delta  
+    sdf    = (bytes_ & 0x7F).astype(np.float32) / 127.0 # 0 … 1
+    if resolution is not None:
+        sdf = sdf * (2 / resolution * math.sqrt(3))  
     sdf[sign == 1] *= -1.0  
     return sdf
 
@@ -316,8 +317,8 @@ def run(path):
         # kiui.lo(fine_active_cells_np, fine_active_cells_sdf_np)
 
         # save
-        # np.savez_compressed(f'{opt.workspace}/{name}.npz', active_cells=fine_active_cells_np, active_cells_sdf=fine_active_cells_sdf_np)
-        np.savez(f'{opt.workspace}/{name}.npz', active_cells=fine_active_cells_np, active_cells_sdf=fine_active_cells_sdf_np)
+        np.savez_compressed(f'{opt.workspace}/{name}.npz', active_cells=fine_active_cells_np, active_cells_sdf=fine_active_cells_sdf_np)
+        # np.savez(f'{opt.workspace}/{name}.npz', active_cells=fine_active_cells_np, active_cells_sdf=fine_active_cells_sdf_np)
         
         # load
         data = np.load(f'{opt.workspace}/{name}.npz')
@@ -326,7 +327,8 @@ def run(path):
         
         # unquantize
         fine_active_cells_global = torch.from_numpy(decompress_coords(fine_active_cells_np, res_fine)).int().to(device)
-        fine_active_cells_sdf = torch.from_numpy(dequantize_sdf(fine_active_cells_sdf_np, res_fine)).float().to(device)
+        # fine_active_cells_sdf = torch.from_numpy(dequantize_sdf(fine_active_cells_sdf_np, res_fine)).float().to(device)
+        fine_active_cells_sdf = torch.from_numpy(dequantize_sdf(fine_active_cells_sdf_np)).float().to(device) # don't use resolution here to get normalized tsdf
         kiui.lo(fine_active_cells_global, fine_active_cells_sdf)
 
     ### now, convert them back to the mesh!
