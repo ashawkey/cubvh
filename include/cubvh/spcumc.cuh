@@ -11,6 +11,12 @@
 #include <thrust/gather.h>
 #include <thrust/for_each.h>
 #include <thrust/execution_policy.h>
+// Added for memory-optimized pipeline
+#include <thrust/copy.h>
+#include <thrust/tuple.h>
+#include <thrust/iterator/zip_iterator.h>
+#include <thrust/iterator/counting_iterator.h>
+#include <thrust/iterator/transform_iterator.h>
 
 // Alias for 3D point (float3 is a built-in CUDA vector type)
 using V3f = float3;
@@ -342,6 +348,34 @@ struct EdgeKey {
     }
 };
 
+// Functors to avoid device-only lambdas with Thrust templates
+struct HeadFlagFunctor {
+    const EdgeKey* keys;
+    __host__ __device__ int operator()(int i) const {
+        if (i == 0) return 1;
+        EdgeKey a = keys[i];
+        EdgeKey b = keys[i - 1];
+        return (a == b) ? 0 : 1;
+    }
+};
+
+struct IsNonZero {
+    __host__ __device__ bool operator()(int x) const { return x != 0; }
+};
+
+struct MinusOne {
+    __host__ __device__ int operator()(int x) const { return x - 1; }
+};
+
+struct RemapTri {
+    const int* map;
+    __host__ __device__ void operator()(Tri& tri) const {
+        tri.v0 = map[tri.v0];
+        tri.v1 = map[tri.v1];
+        tri.v2 = map[tri.v2];
+    }
+};
+
 // CUDA kernel: classify voxels, count intersections and triangles
 __global__ void classifyVoxels(const int* coords, const float* corners,
                                int N, float iso,
@@ -510,25 +544,32 @@ _sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float
     // Temporary arrays for counts and prefix sums
     thrust::device_vector<int> vertCount(N);
     thrust::device_vector<int> triCount(N);
-    // Launch classification kernel to compute vertCount and triCount per voxel
+
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
     classifyVoxels<<<blocks, threads, 0, stream>>>(d_coords, d_corners, N, iso,
                                                   thrust::raw_pointer_cast(vertCount.data()),
                                                   thrust::raw_pointer_cast(triCount.data()));
-    // Compute prefix sums for vertices and triangles
+
     thrust::device_vector<int> prefixVert(N);
     thrust::device_vector<int> prefixTri(N);
     thrust::exclusive_scan(thrust::cuda::par.on(stream),
                            vertCount.begin(), vertCount.end(), prefixVert.begin());
     thrust::exclusive_scan(thrust::cuda::par.on(stream),
                            triCount.begin(), triCount.end(), prefixTri.begin());
-    // Compute total number of vertices (M) and triangles (T)
+
+    // Compute totals
     int M = vertCount.empty() ? 0 : (prefixVert.back() + vertCount.back());
     int T = triCount.empty() ? 0 : (prefixTri.back() + triCount.back());
+
+    // Free counts early to lower peak memory
+    thrust::device_vector<int>().swap(vertCount);
+    thrust::device_vector<int>().swap(triCount);
+
     // Allocate space for all intersection vertices (M) and their keys
     thrust::device_vector<EdgeKey> keys(M);
-    thrust::device_vector<V3f> verts(M);
+    thrust::device_vector<V3f>    verts(M);
+
     // Generate vertices in parallel
     blocks = (N + threads - 1) / threads;
     generateVertices<<<blocks, threads, 0, stream>>>(d_coords, d_corners,
@@ -536,89 +577,87 @@ _sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float
                                                     N, iso,
                                                     thrust::raw_pointer_cast(keys.data()),
                                                     thrust::raw_pointer_cast(verts.data()));
-    // Deduplicate vertices using sort and unique
+
     // Create index array [0, 1, ..., M-1] to track original positions
     thrust::device_vector<int> indices(M);
-    thrust::sequence(thrust::cuda::par.on(stream), indices.begin(), indices.end());
-    // Sort by key, sort indices accordingly (we will reorder verts via indices later)
-    thrust::sort_by_key(thrust::cuda::par.on(stream),
-                        keys.begin(), keys.end(), indices.begin());
-    // Apply the same permutation to the vertex positions
-    thrust::device_vector<V3f> vertsSorted(M);
-    thrust::gather(thrust::cuda::par.on(stream),
-                   indices.begin(), indices.end(), verts.begin(), vertsSorted.begin());
-    // Prepare arrays to mark unique keys
-    thrust::device_vector<int> uniqueFlag(M);
-    thrust::device_vector<int> uniqueId(M);
     if (M > 0) {
-        // Mark the start of each unique key group with 1 (else 0)
-        uniqueFlag[0] = 1;
-        // Use adjacent keys to set the flag (starting from the second element)
-        thrust::transform(thrust::cuda::par.on(stream),
-                          thrust::make_zip_iterator(thrust::make_tuple(keys.begin() + 1, keys.begin())),
-                          thrust::make_zip_iterator(thrust::make_tuple(keys.end(), keys.end() - 1)),
-                          uniqueFlag.begin() + 1,
-                          [] __device__ (const thrust::tuple<EdgeKey, EdgeKey>& t) {
-                              const EdgeKey& curr = thrust::get<0>(t);
-                              const EdgeKey& prev = thrust::get<1>(t);
-                              return (curr == prev) ? 0 : 1;
-                          });
-        // Compute inclusive prefix sum of flags to assign unique vertex IDs
-        thrust::inclusive_scan(thrust::cuda::par.on(stream),
-                               uniqueFlag.begin(), uniqueFlag.end(), uniqueId.begin());
-    }
-    // Number of unique vertices = last value in uniqueId (or 0 if M=0)
-    int uniqueCount = 0;
-    if (M > 0) {
-        // Copy last element of uniqueId from device to host
-        cudaMemcpyAsync(&uniqueCount, thrust::raw_pointer_cast(uniqueId.data()) + (M - 1),
+        thrust::sequence(thrust::cuda::par.on(stream), indices.begin(), indices.end());
+
+        // Sort by key and reorder verts and indices in one pass (no extra vertsSorted buffer)
+        auto zipped_vals = thrust::make_zip_iterator(thrust::make_tuple(verts.begin(), indices.begin()));
+        thrust::sort_by_key(thrust::cuda::par.on(stream), keys.begin(), keys.end(), zipped_vals);
+
+        // Build head flags using a transform iterator functor
+        EdgeKey* d_keys = thrust::raw_pointer_cast(keys.data());
+        auto count_begin = thrust::make_counting_iterator<int>(0);
+        auto head_flags = thrust::make_transform_iterator(count_begin, HeadFlagFunctor{d_keys});
+
+        // Compute inclusive scan of head flags directly into group ids (1-based)
+        thrust::device_vector<int> mapSortedToUnique(M);
+        thrust::inclusive_scan(thrust::cuda::par.on(stream), head_flags, head_flags + M, mapSortedToUnique.begin());
+
+        // Number of unique vertices
+        int uniqueCount = 0;
+        cudaMemcpyAsync(&uniqueCount, thrust::raw_pointer_cast(mapSortedToUnique.data()) + (M - 1),
                         sizeof(int), cudaMemcpyDeviceToHost, stream);
         cudaStreamSynchronize(stream);
-    }
-    // Allocate output vertex array of length uniqueCount
-    vertices.resize(uniqueCount);
-    // Scatter unique vertices (first occurrence of each group) to the output array
-    if (M > 0) {
-        // Subtract 1 from each uniqueId to convert to 0-based index
+        vertices.resize(uniqueCount);
+
+        // Emit unique vertices by copying only the heads
+        thrust::copy_if(thrust::cuda::par.on(stream),
+                        verts.begin(), verts.end(),
+                        head_flags,
+                        vertices.begin(),
+                        IsNonZero());
+
+        // Build mapping from original vertex index -> new unique index
+        thrust::device_vector<int> mapOrigToNew(M);
+        // Convert to 0-based ids in-place and scatter back to original order
         thrust::transform(thrust::cuda::par.on(stream),
-                          uniqueId.begin(), uniqueId.end(), uniqueId.begin(),
-                          [] __device__ (int x) { return x - 1; });
-        // Scatter vertices to their unique index positions (only if uniqueFlag is 1)
-        thrust::scatter_if(thrust::cuda::par.on(stream),
-                           vertsSorted.begin(), vertsSorted.end(),
-                           uniqueId.begin(), uniqueFlag.begin(),
-                           vertices.begin(),
-                           thrust::identity<int>());
-    }
-    // Create mapping from original vertex index -> new unique index
-    thrust::device_vector<int> mapOrigToNew(M);
-    if (M > 0) {
+                          mapSortedToUnique.begin(), mapSortedToUnique.end(),
+                          mapSortedToUnique.begin(),
+                          MinusOne());
         thrust::scatter(thrust::cuda::par.on(stream),
-                        uniqueId.begin(), uniqueId.end(),
-                        indices.begin(),  // 'indices' now holds the sorted order original indices
+                        mapSortedToUnique.begin(), mapSortedToUnique.end(),
+                        indices.begin(),
                         mapOrigToNew.begin());
+
+        // Free temporaries no longer needed before allocating triangles
+        thrust::device_vector<EdgeKey>().swap(keys);
+        thrust::device_vector<V3f>().swap(verts);
+        thrust::device_vector<int>().swap(indices);
+        thrust::device_vector<int>().swap(mapSortedToUnique);
+
+        // Generate triangles (old indices)
+        triangles.resize(T);
+        blocks = (N + threads - 1) / threads;
+        generateTriangles<<<blocks, threads, 0, stream>>>(d_coords, d_corners,
+                                                         thrust::raw_pointer_cast(prefixVert.data()),
+                                                         thrust::raw_pointer_cast(prefixTri.data()),
+                                                         N, iso,
+                                                         thrust::raw_pointer_cast(triangles.data()));
+        // Remap triangle vertex indices to the new deduplicated indices
+        if (T > 0) {
+            int* d_map = thrust::raw_pointer_cast(mapOrigToNew.data());
+            thrust::for_each(thrust::cuda::par.on(stream),
+                             triangles.begin(), triangles.end(),
+                             RemapTri{d_map});
+        }
+        // mapOrigToNew freed on scope exit
+    } else {
+        // No intersections; still need to size triangles correctly
+        triangles.resize(T);
+        if (T > 0) {
+            blocks = (N + threads - 1) / threads;
+            generateTriangles<<<blocks, threads, 0, stream>>>(d_coords, d_corners,
+                                                             thrust::raw_pointer_cast(prefixVert.data()),
+                                                             thrust::raw_pointer_cast(prefixTri.data()),
+                                                             N, iso,
+                                                             thrust::raw_pointer_cast(triangles.data()));
+            // No remap needed; M==0 implies T should also be 0 for standard MC, but keep safe
+        }
     }
-    // Generate all triangles with old vertex indices
-    triangles.resize(T);
-    blocks = (N + threads - 1) / threads;
-    generateTriangles<<<blocks, threads, 0, stream>>>(d_coords, d_corners,
-                                                     thrust::raw_pointer_cast(prefixVert.data()),
-                                                     thrust::raw_pointer_cast(prefixTri.data()),
-                                                     N, iso,
-                                                     thrust::raw_pointer_cast(triangles.data()));
-    // Remap triangle vertex indices to the new deduplicated indices
-    if (M > 0 && T > 0) {
-        int* d_map = thrust::raw_pointer_cast(mapOrigToNew.data());
-        Tri* d_tri = thrust::raw_pointer_cast(triangles.data());
-        thrust::for_each(thrust::cuda::par.on(stream),
-                         triangles.begin(), triangles.end(),
-                         [=] __device__ (Tri& tri) {
-                             tri.v0 = d_map[tri.v0];
-                             tri.v1 = d_map[tri.v1];
-                             tri.v2 = d_map[tri.v2];
-                         });
-    }
-    // Synchronize to ensure all GPU work is done (optional: for safety before returning)
+
     cudaStreamSynchronize(stream);
     return { std::move(vertices), std::move(triangles) };
 }
