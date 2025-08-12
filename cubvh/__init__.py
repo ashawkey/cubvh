@@ -1,1 +1,1 @@
-from .api import cuBVH, floodfill, sparse_marching_cubes
+from .api import cuBVH, floodfill, sparse_marching_cubes, fill_holes, merge_vertices

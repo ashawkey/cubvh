@@ -1,4 +1,3 @@
-
 import numpy as np
 import torch
 
@@ -142,3 +141,40 @@ def sparse_marching_cubes(coords, corners, iso):
     verts, tris = _backend.sparse_marching_cubes(coords, corners, iso)
 
     return verts, tris
+
+# CPU hole filling numpy API
+def fill_holes(vertices: np.ndarray, faces: np.ndarray, return_added: bool = False, check_containment: bool = True, eps: float = 1e-7, verbose: bool = False) -> np.ndarray:
+    """
+    Fill small holes in a triangular mesh using a CPU ear-clipping strategy.
+
+    Args:
+        vertices (np.ndarray float32 [N,3])
+        faces (np.ndarray int32 [M,3])
+        return_added: if True, return only newly added triangles; else full face list
+        check_containment: avoid creating triangles containing other boundary verts
+        eps: numeric epsilon
+        verbose: print detailed logs from C++
+    Returns:
+        np.ndarray int32 [...,3]
+    """
+    assert vertices.ndim == 2 and vertices.shape[1] == 3
+    assert faces.ndim == 2 and faces.shape[1] == 3
+    vertices = np.asarray(vertices, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.int32)
+    return _backend.fill_holes(vertices, faces, return_added, check_containment, float(eps), bool(verbose))
+
+def merge_vertices(vertices: np.ndarray, faces: np.ndarray, threshold: float = 1e-3):
+    """Merge vertices closer than threshold.
+    Args:
+        vertices (np.ndarray float32 [N,3])
+        faces (np.ndarray int32 [M,3])
+        threshold (float): distance threshold
+    Returns:
+        (vertices, faces) after merging
+    """
+    vertices = np.asarray(vertices, dtype=np.float32)
+    faces = np.asarray(faces, dtype=np.int32)
+    assert vertices.ndim==2 and vertices.shape[1]==3
+    assert faces.ndim==2 and faces.shape[1]==3
+    v_new, f_new = _backend.merge_vertices(vertices, faces, float(threshold))
+    return np.asarray(v_new, dtype=np.float32), np.asarray(f_new, dtype=np.int32)
