@@ -343,7 +343,7 @@ def run(path):
         torch.cuda.empty_cache()
         
         start_time = time.time()
-        vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0)
+        vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0, ensure_consistency=True)
         vertices = vertices / res_fine * 2 - 1
         vertices = vertices.detach().cpu().numpy()
         triangles = triangles.detach().cpu().numpy()

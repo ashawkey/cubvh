@@ -530,9 +530,107 @@ __global__ void generateTriangles(const int* coords, const float* corners,
     }
 }
 
+// Device kernel to ensure corner consistency using atomic operations
+__global__ void collectCornerContributions(const int* coords, const float* corners, int N,
+                                          int* corner_x, int* corner_y, int* corner_z, float* corner_vals, int* corner_counts) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= N * 8) return;
+    
+    int voxel_id = tid / 8;
+    int corner_id = tid % 8;
+    
+    // Get voxel position
+    int vx = coords[voxel_id * 3 + 0];
+    int vy = coords[voxel_id * 3 + 1]; 
+    int vz = coords[voxel_id * 3 + 2];
+    
+    // Get corner position
+    int3 offset = cornerOffset[corner_id];
+    int cx = vx + offset.x;
+    int cy = vy + offset.y;
+    int cz = vz + offset.z;
+    
+    // Store corner data
+    corner_x[tid] = cx;
+    corner_y[tid] = cy;
+    corner_z[tid] = cz;
+    corner_vals[tid] = corners[voxel_id * 8 + corner_id];
+    corner_counts[tid] = 1;
+}
+
+__global__ void updateCornerValues(const int* coords, float* corners, int N,
+                                 const int* unique_x, const int* unique_y, const int* unique_z, 
+                                 const float* avg_vals, int num_unique) {
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= N * 8) return;
+    
+    int voxel_id = tid / 8;
+    int corner_id = tid % 8;
+    
+    // Get voxel position
+    int vx = coords[voxel_id * 3 + 0];
+    int vy = coords[voxel_id * 3 + 1]; 
+    int vz = coords[voxel_id * 3 + 2];
+    
+    // Get corner position
+    int3 offset = cornerOffset[corner_id];
+    int cx = vx + offset.x;
+    int cy = vy + offset.y;
+    int cz = vz + offset.z;
+    
+    // Binary search for this corner coordinate
+    int left = 0, right = num_unique - 1;
+    while (left <= right) {
+        int mid = (left + right) / 2;
+        int mx = unique_x[mid];
+        int my = unique_y[mid]; 
+        int mz = unique_z[mid];
+        
+        if (cx < mx || (cx == mx && cy < my) || (cx == mx && cy == my && cz < mz)) {
+            right = mid - 1;
+        } else if (cx > mx || (cx == mx && cy > my) || (cx == mx && cy == my && cz > mz)) {
+            left = mid + 1;
+        } else {
+            // Found exact match, update corner value
+            corners[voxel_id * 8 + corner_id] = avg_vals[mid];
+            break;
+        }
+    }
+}
+
+// Helper structure for corner data sorting
+struct CornerData {
+    int x, y, z;
+    float value;
+    int count;
+    
+    __host__ __device__ bool operator<(const CornerData& other) const {
+        if (x != other.x) return x < other.x;
+        if (y != other.y) return y < other.y;
+        return z < other.z;
+    }
+    
+    __host__ __device__ bool operator==(const CornerData& other) const {
+        return x == other.x && y == other.y && z == other.z;
+    }
+};
+
+// Reduction operator for averaging
+struct CornerAverage {
+    __host__ __device__ CornerData operator()(const CornerData& a, const CornerData& b) const {
+        CornerData result;
+        result.x = a.x;  // coordinates should be same
+        result.y = a.y;
+        result.z = a.z;
+        result.value = a.value + b.value;  // sum values
+        result.count = a.count + b.count;  // sum counts
+        return result;
+    }
+};
+
 // Host function: sparse marching cubes
 inline std::pair<thrust::device_vector<V3f>, thrust::device_vector<Tri>>
-_sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float iso, cudaStream_t stream) {
+_sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float iso, bool ensure_consistency, cudaStream_t stream) {
     // Output containers
     thrust::device_vector<V3f> vertices; 
     thrust::device_vector<Tri> triangles;
@@ -541,13 +639,120 @@ _sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float
         return {vertices, triangles};
     }
 
+    // Create a copy of corners data if we need to ensure consistency
+    thrust::device_vector<float> corners_copy;
+    const float* d_corners_to_use = d_corners;
+    
+    if (ensure_consistency) {
+        // Copy original corner data
+        corners_copy.resize(N * 8);
+        thrust::copy(thrust::cuda::par.on(stream), 
+                     d_corners, d_corners + N * 8, 
+                     corners_copy.begin());
+        
+        // Total number of corner instances (8 per voxel)
+        const int total_corners = N * 8;
+        
+        // Create arrays to store corner data
+        thrust::device_vector<int> corner_x(total_corners);
+        thrust::device_vector<int> corner_y(total_corners);
+        thrust::device_vector<int> corner_z(total_corners);
+        thrust::device_vector<float> corner_vals(total_corners);
+        thrust::device_vector<int> corner_counts(total_corners);
+        
+        // Collect all corner contributions
+        int threads_corner = 256;
+        int blocks_corner = (total_corners + threads_corner - 1) / threads_corner;
+        collectCornerContributions<<<blocks_corner, threads_corner, 0, stream>>>(
+            d_coords, d_corners, N,
+            thrust::raw_pointer_cast(corner_x.data()),
+            thrust::raw_pointer_cast(corner_y.data()),
+            thrust::raw_pointer_cast(corner_z.data()),
+            thrust::raw_pointer_cast(corner_vals.data()),
+            thrust::raw_pointer_cast(corner_counts.data()));
+        
+        // Create corner data structure for sorting and averaging
+        thrust::device_vector<CornerData> corner_data(total_corners);
+        thrust::transform(thrust::cuda::par.on(stream),
+                          thrust::counting_iterator<int>(0),
+                          thrust::counting_iterator<int>(total_corners),
+                          corner_data.begin(),
+                          [corner_x_ptr = thrust::raw_pointer_cast(corner_x.data()),
+                           corner_y_ptr = thrust::raw_pointer_cast(corner_y.data()),
+                           corner_z_ptr = thrust::raw_pointer_cast(corner_z.data()),
+                           corner_vals_ptr = thrust::raw_pointer_cast(corner_vals.data()),
+                           corner_counts_ptr = thrust::raw_pointer_cast(corner_counts.data())] __device__ (int i) {
+                              CornerData data;
+                              data.x = corner_x_ptr[i];
+                              data.y = corner_y_ptr[i];
+                              data.z = corner_z_ptr[i];
+                              data.value = corner_vals_ptr[i];
+                              data.count = corner_counts_ptr[i];
+                              return data;
+                          });
+        
+        // Sort by corner coordinates
+        thrust::sort(thrust::cuda::par.on(stream), corner_data.begin(), corner_data.end());
+        
+        // Reduce by key to get average for each unique corner
+        thrust::device_vector<CornerData> unique_corners(total_corners);
+        thrust::device_vector<CornerData> corner_sums(total_corners);
+        
+        auto new_end = thrust::reduce_by_key(
+            thrust::cuda::par.on(stream),
+            corner_data.begin(), corner_data.end(),
+            corner_data.begin(),
+            unique_corners.begin(),
+            corner_sums.begin(),
+            [] __device__ (const CornerData& a, const CornerData& b) {
+                return a.x == b.x && a.y == b.y && a.z == b.z;
+            },
+            CornerAverage());
+        
+        int num_unique = new_end.first - unique_corners.begin();
+        unique_corners.resize(num_unique);
+        corner_sums.resize(num_unique);
+        
+        // Compute averages and create coordinate arrays
+        thrust::device_vector<int> unique_x(num_unique);
+        thrust::device_vector<int> unique_y(num_unique);
+        thrust::device_vector<int> unique_z(num_unique);
+        thrust::device_vector<float> avg_vals(num_unique);
+        
+        thrust::transform(thrust::cuda::par.on(stream),
+                          thrust::counting_iterator<int>(0),
+                          thrust::counting_iterator<int>(num_unique),
+                          thrust::make_zip_iterator(thrust::make_tuple(
+                              unique_x.begin(), unique_y.begin(), unique_z.begin(), avg_vals.begin())),
+                          [unique_corners_ptr = thrust::raw_pointer_cast(unique_corners.data()),
+                           corner_sums_ptr = thrust::raw_pointer_cast(corner_sums.data())] __device__ (int i) {
+                              const CornerData& corner = unique_corners_ptr[i];
+                              const CornerData& sum = corner_sums_ptr[i];
+                              float avg = sum.value / sum.count;
+                              return thrust::make_tuple(corner.x, corner.y, corner.z, avg);
+                          });
+        
+        // Update corner values using the simpler kernel
+        updateCornerValues<<<blocks_corner, threads_corner, 0, stream>>>(
+            d_coords,
+            thrust::raw_pointer_cast(corners_copy.data()),
+            N,
+            thrust::raw_pointer_cast(unique_x.data()),
+            thrust::raw_pointer_cast(unique_y.data()),
+            thrust::raw_pointer_cast(unique_z.data()),
+            thrust::raw_pointer_cast(avg_vals.data()),
+            num_unique);
+        
+        d_corners_to_use = thrust::raw_pointer_cast(corners_copy.data());
+    }
+
     // Temporary arrays for counts and prefix sums
     thrust::device_vector<int> vertCount(N);
     thrust::device_vector<int> triCount(N);
 
     int threads = 256;
     int blocks = (N + threads - 1) / threads;
-    classifyVoxels<<<blocks, threads, 0, stream>>>(d_coords, d_corners, N, iso,
+    classifyVoxels<<<blocks, threads, 0, stream>>>(d_coords, d_corners_to_use, N, iso,
                                                   thrust::raw_pointer_cast(vertCount.data()),
                                                   thrust::raw_pointer_cast(triCount.data()));
 
@@ -572,7 +777,7 @@ _sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float
 
     // Generate vertices in parallel
     blocks = (N + threads - 1) / threads;
-    generateVertices<<<blocks, threads, 0, stream>>>(d_coords, d_corners,
+    generateVertices<<<blocks, threads, 0, stream>>>(d_coords, d_corners_to_use,
                                                     thrust::raw_pointer_cast(prefixVert.data()),
                                                     N, iso,
                                                     thrust::raw_pointer_cast(keys.data()),
@@ -631,7 +836,7 @@ _sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float
         // Generate triangles (old indices)
         triangles.resize(T);
         blocks = (N + threads - 1) / threads;
-        generateTriangles<<<blocks, threads, 0, stream>>>(d_coords, d_corners,
+        generateTriangles<<<blocks, threads, 0, stream>>>(d_coords, d_corners_to_use,
                                                          thrust::raw_pointer_cast(prefixVert.data()),
                                                          thrust::raw_pointer_cast(prefixTri.data()),
                                                          N, iso,
@@ -649,7 +854,7 @@ _sparse_marching_cubes(const int* d_coords, const float* d_corners, int N, float
         triangles.resize(T);
         if (T > 0) {
             blocks = (N + threads - 1) / threads;
-            generateTriangles<<<blocks, threads, 0, stream>>>(d_coords, d_corners,
+            generateTriangles<<<blocks, threads, 0, stream>>>(d_coords, d_corners_to_use,
                                                              thrust::raw_pointer_cast(prefixVert.data()),
                                                              thrust::raw_pointer_cast(prefixTri.data()),
                                                              N, iso,

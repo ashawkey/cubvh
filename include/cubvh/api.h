@@ -30,6 +30,6 @@ cuBVH* create_cuBVH(Ref<const Verts> vertices, Ref<const Trigs> triangles);
 at::Tensor floodfill(at::Tensor grid);
 
 // sparse marching cubes
-std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(at::Tensor coords, at::Tensor corners, double iso_d);
+std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(at::Tensor coords, at::Tensor corners, double iso_d, bool ensure_consistency = false);
     
 } // namespace cubvh

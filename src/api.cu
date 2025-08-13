@@ -96,7 +96,8 @@ at::Tensor floodfill(at::Tensor grid) {
 std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(
     at::Tensor coords,        // [N,3] int32, cuda
     at::Tensor corners,       // [N,8] float32, cuda
-    double iso_d)             // (PyTorch passes double ⇒ cast to float)
+    double iso_d,             // (PyTorch passes double ⇒ cast to float)
+    bool ensure_consistency)  // whether to ensure corner consistency
 {
     TORCH_CHECK(coords.is_cuda(),  "coords must reside on CUDA");
     TORCH_CHECK(corners.is_cuda(), "corners must reside on CUDA");
@@ -121,7 +122,7 @@ std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(
     cudaStream_t stream = at::cuda::getCurrentCUDAStream().stream();
 
     // --- call the CUDA sparse MC core (header we wrote earlier) -------------------
-    auto mesh = _sparse_marching_cubes(d_coords, d_corners, N, iso, stream);
+    auto mesh = _sparse_marching_cubes(d_coords, d_corners, N, iso, ensure_consistency, stream);
     thrust::device_vector<V3f> &verts_vec = mesh.first;
     thrust::device_vector<Tri> &tris_vec  = mesh.second;
     const int64_t M = static_cast<int64_t>(verts_vec.size());

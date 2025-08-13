@@ -23,7 +23,7 @@ m.def("create_cuBVH", &create_cuBVH);
 
 m.def("floodfill", &floodfill);
 
-m.def("sparse_marching_cubes", &sparse_marching_cubes);
+m.def("sparse_marching_cubes", &sparse_marching_cubes, py::arg("coords"), py::arg("corners"), py::arg("iso"), py::arg("ensure_consistency") = false);
 
 // CPU API
 m.def("fill_holes", &fill_holes);
