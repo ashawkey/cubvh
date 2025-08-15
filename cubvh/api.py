@@ -179,3 +179,25 @@ def merge_vertices(vertices: np.ndarray, faces: np.ndarray, threshold: float = 1
     assert faces.ndim==2 and faces.shape[1]==3
     v_new, f_new = _backend.merge_vertices(vertices, faces, float(threshold))
     return np.asarray(v_new, dtype=np.float32), np.asarray(f_new, dtype=np.int32)
+
+
+def sparse_marching_cubes_cpu(coords, corners, iso: float, ensure_consistency: bool = False):
+    """CPU sparse marching cubes wrapper.
+    Args:
+        coords: (N,3) int32 voxel coordinates (torch.Tensor or np.ndarray)
+        corners: (N,8) float32 corner SDF values (torch.Tensor or np.ndarray)
+        iso: isovalue
+        ensure_consistency: average shared corners across voxels before extraction
+    Returns:
+        (vertices, faces): np.ndarray float32 [M,3], np.ndarray int32 [T,3]
+    """
+    if torch.is_tensor(coords):
+        coords = coords.detach().cpu().numpy()
+    if torch.is_tensor(corners):
+        corners = corners.detach().cpu().numpy()
+    coords = np.asarray(coords, dtype=np.int32)
+    corners = np.asarray(corners, dtype=np.float32)
+    assert coords.ndim == 2 and coords.shape[1] == 3, "coords must be [N,3]"
+    assert corners.ndim == 2 and corners.shape[1] == 8, "corners must be [N,8]"
+    v, f = _backend.sparse_marching_cubes_cpu(coords, corners, float(iso), bool(ensure_consistency))
+    return np.asarray(v, dtype=np.float32), np.asarray(f, dtype=np.int32)

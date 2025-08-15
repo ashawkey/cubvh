@@ -28,5 +28,7 @@ m.def("sparse_marching_cubes", &sparse_marching_cubes, py::arg("coords"), py::ar
 // CPU API
 m.def("fill_holes", &fill_holes);
 m.def("merge_vertices", &merge_vertices, py::arg("vertices"), py::arg("faces"), py::arg("threshold"));
+m.def("sparse_marching_cubes_cpu", &sparse_marching_cubes_cpu,
+    py::arg("coords"), py::arg("corners"), py::arg("iso"), py::arg("ensure_consistency") = false);
 
 }

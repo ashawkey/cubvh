@@ -4,6 +4,8 @@
 #include <pybind11/eigen.h>
 #include <cpu/fill_holes.h>
 #include <cpu/merge_vertices.h>
+// CPU sparse marching cubes
+#include <cpu/spmc.h>
 
 #include <vector>
 
@@ -115,6 +117,56 @@ static std::pair<py::array_t<float>, py::array_t<int>> merge_vertices(
     for (size_t i=0;i<F_out.size();++i) {
         fO[3*i+0] = F_out[i][0]; fO[3*i+1] = F_out[i][1]; fO[3*i+2] = F_out[i][2];
     }
+    return {v_out, f_out};
+}
+
+// sparse marching cubes (CPU): returns (vertices [M,3] float32, faces [T,3] int32)
+static std::pair<py::array_t<float>, py::array_t<int>> sparse_marching_cubes_cpu(
+    py::array_t<int,   py::array::c_style | py::array::forcecast> coords,
+    py::array_t<float, py::array::c_style | py::array::forcecast> corners,
+    double iso_d,
+    bool ensure_consistency = false) {
+
+    auto cbuf = coords.request();
+    auto vbuf = corners.request();
+    if (!(cbuf.ndim == 2 && cbuf.shape[1] == 3)) {
+        throw std::runtime_error("coords must be of shape [N,3] (int32)");
+    }
+    if (!(vbuf.ndim == 2 && vbuf.shape[1] == 8)) {
+        throw std::runtime_error("corners must be of shape [N,8] (float32)");
+    }
+    if (cbuf.shape[0] != vbuf.shape[0]) {
+        throw std::runtime_error("coords and corners must have the same first dimension N");
+    }
+
+    const int N = static_cast<int>(cbuf.shape[0]);
+    const int*   cptr = static_cast<const int*>(cbuf.ptr);
+    const float* fptr = static_cast<const float*>(vbuf.ptr);
+    const float iso = static_cast<float>(iso_d);
+
+    auto mesh = _sparse_marching_cubes(cptr, fptr, N, iso, ensure_consistency);
+    const auto& V = mesh.first;
+    const auto& F = mesh.second;
+
+    // Allocate outputs
+    py::array_t<float> v_out({(py::ssize_t)V.size(), (py::ssize_t)3});
+    py::array_t<int>   f_out({(py::ssize_t)F.size(), (py::ssize_t)3});
+    auto vObuf = v_out.request();
+    auto fObuf = f_out.request();
+    float* vO = static_cast<float*>(vObuf.ptr);
+    int*   fO = static_cast<int*>(fObuf.ptr);
+
+    for (size_t i = 0; i < V.size(); ++i) {
+        vO[3*i+0] = V[i].x;
+        vO[3*i+1] = V[i].y;
+        vO[3*i+2] = V[i].z;
+    }
+    for (size_t i = 0; i < F.size(); ++i) {
+        fO[3*i+0] = F[i].v0;
+        fO[3*i+1] = F[i].v1;
+        fO[3*i+2] = F[i].v2;
+    }
+
     return {v_out, f_out};
 }
 
