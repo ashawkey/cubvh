@@ -6,6 +6,7 @@
 #include <cstdint>
 #include <utility>
 #include <numeric>
+#include <unordered_map>
 
 // CPU implementation of the same sparse marching cubes algorithm
 // as include/cubvh/spcumc.cuh, but using standard C++ containers.
@@ -352,177 +353,111 @@ inline int popcnt12(int m) {
 inline std::pair<std::vector<V3f>, std::vector<Tri>>
 _sparse_marching_cubes(const int* coords, const float* corners, int N, float iso, bool ensure_consistency)
 {
-	std::vector<V3f> vertices; 
+	std::vector<V3f> vertices;
 	std::vector<Tri> triangles;
 	if (N <= 0) return {vertices, triangles};
 
-	// Optionally average duplicated corner samples across voxels
-	std::vector<float> corners_buf; // if used, holds adjusted corner values
-	const float* cptr = corners;
+	// Hash helpers for fast maps
+	struct EdgeKeyHash {
+		std::size_t operator()(const EdgeKey& k) const noexcept {
+			// Simple mix of 4 ints
+			std::size_t h = 1469598103934665603ull; // FNV offset basis
+			auto mix = [&](std::uint64_t v){ h ^= v + 0x9e3779b97f4a7c15ull + (h<<6) + (h>>2); };
+			mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(k.x)));
+			mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(k.y)));
+			mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(k.z)));
+			mix(static_cast<std::uint64_t>(k.axis));
+			return h;
+		}
+	};
+	struct CornerKey { int x,y,z; bool operator==(const CornerKey& o) const { return x==o.x&&y==o.y&&z==o.z; } };
+	struct CornerKeyHash {
+		std::size_t operator()(const CornerKey& k) const noexcept {
+			std::size_t h = 1469598103934665603ull;
+			auto mix = [&](std::uint64_t v){ h ^= v + 0x9e3779b97f4a7c15ull + (h<<6) + (h>>2); };
+			mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(k.x)));
+			mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(k.y)));
+			mix(static_cast<std::uint64_t>(static_cast<std::int64_t>(k.z)));
+			return h;
+		}
+	};
+
+	// Optional: average duplicated corner samples across voxels using a hashmap in O(K)
+	std::unordered_map<CornerKey, std::pair<double,int>, CornerKeyHash> cornerStats; // sum,count
 	if (ensure_consistency) {
-		const int total = N * 8;
-		std::vector<CornerData> cds; cds.reserve(total);
+		cornerStats.reserve(static_cast<size_t>(N) * 8u);
 		for (int i=0;i<N;++i) {
 			int vx = coords[3*i+0], vy = coords[3*i+1], vz = coords[3*i+2];
 			for (int k=0;k<8;++k) {
 				I3 off = cornerOffset[k];
-				cds.push_back({vx+off.x, vy+off.y, vz+off.z, corners[i*8+k], 1});
+				CornerKey ck{vx+off.x, vy+off.y, vz+off.z};
+				auto &sc = cornerStats[ck];
+				sc.first += static_cast<double>(corners[i*8+k]);
+				++sc.second;
 			}
 		}
-		std::sort(cds.begin(), cds.end(), [](const CornerData&a,const CornerData&b){
-			if (a.x!=b.x) return a.x<b.x; if (a.y!=b.y) return a.y<b.y; return a.z<b.z;
-		});
-		// Reduce by key to compute averages
-		std::vector<CornerData> uniq; uniq.reserve(cds.size());
-		std::vector<float> avg; avg.reserve(cds.size());
-		for (size_t i=0;i<cds.size();) {
-			size_t j=i+1; float sum=cds[i].value; int cnt=1; int x=cds[i].x,y=cds[i].y,z=cds[i].z;
-			while (j<cds.size() && cds[j].x==x && cds[j].y==y && cds[j].z==z) { sum += cds[j].value; cnt++; j++; }
-			uniq.push_back({x,y,z,0.0f,cnt}); avg.push_back(sum / cnt);
-			i=j;
-		}
-		// Overwrite corner values using binary search into uniq
-		corners_buf.resize(total);
-		auto key_at = [&](int x,int y,int z){
-			int l=0, r=(int)uniq.size()-1; 
-			while (l<=r) {
-				int m=(l+r)/2; const auto& u=uniq[m];
-				if      (x<u.x || (x==u.x && (y<u.y || (y==u.y && z<u.z)))) r=m-1;
-				else if (x>u.x || (x==u.x && (y>u.y || (y==u.y && z>u.z)))) l=m+1;
-				else return avg[m];
-			}
-			return 0.0f; // should not happen
-		};
-		for (int i=0;i<N;++i) {
-			int vx = coords[3*i+0], vy = coords[3*i+1], vz = coords[3*i+2];
-			for (int k=0;k<8;++k) {
-				I3 off = cornerOffset[k];
-				corners_buf[i*8+k] = key_at(vx+off.x, vy+off.y, vz+off.z);
-			}
-		}
-		cptr = corners_buf.data();
 	}
 
-	// Pass 1: classify voxels and compute counts
-	std::vector<int> vertCount(N, 0), triCount(N, 0);
-	for (int i=0;i<N;++i) {
-		const float* v = cptr + i*8;
-		int ci = 0;
-		if (v[0] < iso) ci |= 1;  if (v[1] < iso) ci |= 2;
-		if (v[2] < iso) ci |= 4;  if (v[3] < iso) ci |= 8;
-		if (v[4] < iso) ci |= 16; if (v[5] < iso) ci |= 32;
-		if (v[6] < iso) ci |= 64; if (v[7] < iso) ci |= 128;
-		int mask = edgeTable[ci];
-		vertCount[i] = popcnt12(mask);
-		int tcount = 0; for (int t=0;t<15;t+=3) { if (triTable[ci][t] == -1) break; tcount++; }
-		triCount[i] = tcount;
-	}
+	// Single-pass: create vertices lazily and build triangles directly
+	std::unordered_map<EdgeKey, int, EdgeKeyHash> edge2idx;
+	edge2idx.reserve(static_cast<size_t>(N) * 3u); // heuristic
+	vertices.reserve(static_cast<size_t>(N) * 3u); // heuristic
+	triangles.reserve(static_cast<size_t>(N) * 2u); // heuristic
 
-	// Exclusive scans
-	std::vector<int> prefixVert(N, 0), prefixTri(N, 0);
-	int run=0; for (int i=0;i<N;++i){ prefixVert[i]=run; run+=vertCount[i]; }
-	run=0; for (int i=0;i<N;++i){ prefixTri[i]=run; run+=triCount[i]; }
-	const int M = (N==0)?0:(prefixVert.back() + vertCount.back());
-	const int T = (N==0)?0:(prefixTri.back() + triCount.back());
+	auto get_avg = [&](int x,int y,int z, float fallback)->float{
+		if (!ensure_consistency) return fallback;
+		auto it = cornerStats.find(CornerKey{x,y,z});
+		if (it == cornerStats.end()) return fallback;
+		return static_cast<float>(it->second.first / std::max(1, it->second.second));
+	};
 
-	// Pass 2: generate raw vertices and keys
-	std::vector<EdgeKey> keys; keys.resize(M);
-	std::vector<V3f> verts;     verts.resize(M);
 	for (int i=0;i<N;++i) {
-		int base = prefixVert[i]; int outOfs = 0;
 		int vx = coords[3*i+0], vy = coords[3*i+1], vz = coords[3*i+2];
-		float v[8]; for(int k=0;k<8;++k) v[k] = cptr[i*8+k];
-		int ci = 0;
-		if (v[0] < iso) ci |= 1;  if (v[1] < iso) ci |= 2;
-		if (v[2] < iso) ci |= 4;  if (v[3] < iso) ci |= 8;
-		if (v[4] < iso) ci |= 16; if (v[5] < iso) ci |= 32;
-		if (v[6] < iso) ci |= 64; if (v[7] < iso) ci |= 128;
-		int mask = edgeTable[ci];
-		if (!mask) continue;
-		for (int e=0;e<12;++e) {
-			if (!(mask & (1<<e))) continue;
-			int a = EDGE_CORNERS[e][0], b = EDGE_CORNERS[e][1];
-			float va=v[a], vb=v[b]; float denom = vb - va; float t;
-			if (std::fabs(denom) < 1e-30f) t = 0.5f; else { t = (iso - va) / denom; t = std::min(std::max(t, 0.0f), 1.0f); }
-			I3 offA = cornerOffset[a], offB = cornerOffset[b];
-			float pAx = float(vx + offA.x), pAy = float(vy + offA.y), pAz = float(vz + offA.z);
-			float pBx = float(vx + offB.x), pBy = float(vy + offB.y), pBz = float(vz + offB.z);
-			V3f P{ pAx + t*(pBx-pAx), pAy + t*(pBy-pAy), pAz + t*(pBz-pAz) };
-			EdgeKey key; key.x = (offA.x < offB.x ? vx+offA.x : vx+offB.x);
-			key.y = (offA.y < offB.y ? vy+offA.y : vy+offB.y);
-			key.z = (offA.z < offB.z ? vz+offA.z : vz+offB.z);
-			key.axis = (offA.x != offB.x) ? 0 : (offA.y != offB.y ? 1 : 2);
-			verts[base+outOfs] = P; keys[base+outOfs] = key; ++outOfs;
+		float v[8];
+		for (int k=0;k<8;++k) {
+			I3 off = cornerOffset[k];
+			float raw = corners[i*8+k];
+			v[k] = get_avg(vx+off.x, vy+off.y, vz+off.z, raw);
 		}
-	}
-
-	// Deduplicate vertices by sorting keys and remapping
-	std::vector<int> order(M); std::iota(order.begin(), order.end(), 0);
-	std::sort(order.begin(), order.end(), [&](int a, int b){
-		const EdgeKey &ka = keys[a], &kb = keys[b];
-		if (ka.x != kb.x) return ka.x < kb.x;
-		if (ka.y != kb.y) return ka.y < kb.y;
-		if (ka.z != kb.z) return ka.z < kb.z;
-		return ka.axis < kb.axis;
-	});
-	std::vector<int> mapOrigToNew(M, -1);
-	vertices.clear(); vertices.reserve(M);
-	int uniqueCount = 0;
-	for (int idx_sorted = 0; idx_sorted < M; ++idx_sorted) {
-		int orig = order[idx_sorted];
-		if (idx_sorted == 0) {
-			mapOrigToNew[orig] = uniqueCount++;
-			vertices.push_back(verts[orig]);
-		} else {
-			const EdgeKey &kcur = keys[orig];
-			const EdgeKey &kprev = keys[order[idx_sorted-1]];
-			bool isHead = !(kcur.x==kprev.x && kcur.y==kprev.y && kcur.z==kprev.z && kcur.axis==kprev.axis);
-			if (isHead) {
-				mapOrigToNew[orig] = uniqueCount++;
-				vertices.push_back(verts[orig]);
-			} else {
-				mapOrigToNew[orig] = uniqueCount-1;
-			}
-		}
-	}
-
-	// Pass 3: generate triangles using old indices then remap
-	triangles.clear(); triangles.resize(T);
-	for (int i=0;i<N;++i) {
-		int triStart = prefixTri[i]; int baseVert = prefixVert[i];
-		const float* v = cptr + i*8;
 		int ci = 0;
 		if (v[0] < iso) ci |= 1;  if (v[1] < iso) ci |= 2;
 		if (v[2] < iso) ci |= 4;  if (v[3] < iso) ci |= 8;
 		if (v[4] < iso) ci |= 16; if (v[5] < iso) ci |= 32;
 		if (v[6] < iso) ci |= 64; if (v[7] < iso) ci |= 128;
 		int mask = edgeTable[ci]; if (!mask) continue;
-		int outIdx = 0;
+
+		auto edge_index = [&](int e)->int {
+			int a = EDGE_CORNERS[e][0], b = EDGE_CORNERS[e][1];
+			I3 offA = cornerOffset[a], offB = cornerOffset[b];
+			EdgeKey key; key.x = (offA.x < offB.x ? vx+offA.x : vx+offB.x);
+			key.y = (offA.y < offB.y ? vy+offA.y : vy+offB.y);
+			key.z = (offA.z < offB.z ? vz+offA.z : vz+offB.z);
+			key.axis = (offA.x != offB.x) ? 0 : (offA.y != offB.y ? 1 : 2);
+			auto it = edge2idx.find(key);
+			if (it != edge2idx.end()) return it->second;
+			// Create new vertex
+			float va=v[a], vb=v[b]; float denom = vb - va; float t;
+			if (std::fabs(denom) < 1e-30f) t = 0.5f; else { t = (iso - va) / denom; t = std::min(std::max(t, 0.0f), 1.0f); }
+			float pAx = float(vx + offA.x), pAy = float(vy + offA.y), pAz = float(vz + offA.z);
+			float pBx = float(vx + offB.x), pBy = float(vy + offB.y), pBz = float(vz + offB.z);
+			V3f P{ pAx + t*(pBx-pAx), pAy + t*(pBy-pAy), pAz + t*(pBz-pAz) };
+			int idx = static_cast<int>(vertices.size());
+			vertices.push_back(P);
+			edge2idx.emplace(key, idx);
+			return idx;
+		};
+
 		for (int t=0;t<15;t+=3) {
 			int e0 = triTable[ci][t]; if (e0 == -1) break;
 			int e1 = triTable[ci][t+1]; int e2 = triTable[ci][t+2];
-			int off0 = popcnt12(mask & ((1 << e0) - 1));
-			int off1 = popcnt12(mask & ((1 << e1) - 1));
-			int off2 = popcnt12(mask & ((1 << e2) - 1));
-			Tri tri; tri.v0 = baseVert + off0; tri.v1 = baseVert + off2; tri.v2 = baseVert + off1; // CCW
-			triangles[triStart + outIdx] = tri; ++outIdx;
+			Tri tri;
+			// Maintain CCW like original: v0=e0, v1=e2, v2=e1
+			tri.v0 = edge_index(e0);
+			tri.v1 = edge_index(e2);
+			tri.v2 = edge_index(e1);
+			triangles.push_back(tri);
 		}
-	}
-	// Remap triangle indices to unique vertices
-	for (auto &tri : triangles) {
-		tri.v0 = (tri.v0>=0 && tri.v0<M) ? mapOrigToNew[tri.v0] : tri.v0;
-		tri.v1 = (tri.v1>=0 && tri.v1<M) ? mapOrigToNew[tri.v1] : tri.v1;
-		tri.v2 = (tri.v2>=0 && tri.v2<M) ? mapOrigToNew[tri.v2] : tri.v2;
 	}
 
 	return {std::move(vertices), std::move(triangles)};
 }
-
-// API-parity overload: accept a stream-like parameter (ignored on CPU)
-template <typename StreamT>
-inline std::pair<std::vector<V3f>, std::vector<Tri>>
-_sparse_marching_cubes(const int* coords, const float* corners, int N, float iso, bool ensure_consistency, StreamT /*stream*/)
-{
-	return _sparse_marching_cubes(coords, corners, N, iso, ensure_consistency);
-}
-
