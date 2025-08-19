@@ -49,4 +49,10 @@ m.def("sparse_marching_cubes_cpu", &sparse_marching_cubes_cpu,
     py::arg("ensure_consistency") = false
 );
 
+// lattice/cell conversions
+m.def("voxels2corners", &voxels2corners,
+    py::arg("coords"), py::arg("corners"));
+m.def("corners2voxels", &corners2voxels,
+    py::arg("coords"), py::arg("values"));
+
 }

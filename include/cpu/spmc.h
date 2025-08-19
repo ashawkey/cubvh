@@ -314,8 +314,8 @@ static const int triTable[256][16] = {
 };
 
 // Corner offsets and edge endpoints
-struct I3 { int x, y, z; };
-static const I3 cornerOffset[8] = {
+struct Int3 { int x, y, z; };
+static const Int3 cornerOffset[8] = {
 	{0,0,0}, {1,0,0}, {1,1,0}, {0,1,0},
 	{0,0,1}, {1,0,1}, {1,1,1}, {0,1,1}
 };
@@ -392,7 +392,7 @@ sparse_marching_cubes(const int* coords, const float* corners, int N, float iso,
 		for (int i=0;i<N;++i) {
 			int vx = coords[3*i+0], vy = coords[3*i+1], vz = coords[3*i+2];
 			for (int k=0;k<8;++k) {
-				I3 off = cornerOffset[k];
+				Int3 off = cornerOffset[k];
 				CornerKey ck{vx+off.x, vy+off.y, vz+off.z};
 				auto &sc = cornerStats[ck];
 				sc.first += static_cast<double>(corners[i*8+k]);
@@ -418,7 +418,7 @@ sparse_marching_cubes(const int* coords, const float* corners, int N, float iso,
 		int vx = coords[3*i+0], vy = coords[3*i+1], vz = coords[3*i+2];
 		float v[8];
 		for (int k=0;k<8;++k) {
-			I3 off = cornerOffset[k];
+			Int3 off = cornerOffset[k];
 			float raw = corners[i*8+k];
 			v[k] = get_avg(vx+off.x, vy+off.y, vz+off.z, raw);
 		}
@@ -431,7 +431,7 @@ sparse_marching_cubes(const int* coords, const float* corners, int N, float iso,
 
 		auto edge_index = [&](int e)->int {
 			int a = EDGE_CORNERS[e][0], b = EDGE_CORNERS[e][1];
-			I3 offA = cornerOffset[a], offB = cornerOffset[b];
+			Int3 offA = cornerOffset[a], offB = cornerOffset[b];
 			EdgeKey key; key.x = (offA.x < offB.x ? vx+offA.x : vx+offB.x);
 			key.y = (offA.y < offB.y ? vy+offA.y : vy+offB.y);
 			key.z = (offA.z < offB.z ? vz+offA.z : vz+offB.z);

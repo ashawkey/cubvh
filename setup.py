@@ -62,7 +62,7 @@ pip install -e . # ditto but better (e.g., dependency & metadata handling)
 '''
 setup(
 	name='cubvh', # package name, import this to use python API
-	version='0.1.0',
+	version='0.1.1',
 	description='CUDA BVH implementation',
 	url='https://github.com/ashawkey/cubvh',
 	author='kiui',

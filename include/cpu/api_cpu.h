@@ -6,8 +6,11 @@
 #include <cpu/merge_vertices.h>
 // CPU sparse marching cubes
 #include <cpu/spmc.h>
+// lattice/voxel conversions
+#include <cpu/convert_lattice.h>
 
 #include <vector>
+#include <cstring>
 
 namespace py = pybind11;
 
@@ -168,6 +171,85 @@ static std::pair<py::array_t<float>, py::array_t<int>> sparse_marching_cubes_cpu
     }
 
     return {v_out, f_out};
+}
+
+} // namespace cubvh
+
+// Conversion utilities (numpy API)
+namespace cubvh {
+
+// voxels -> corners: coords [N,3] int32, corners [N,8] float32
+static std::pair<py::array_t<int>, py::array_t<float>> voxels2corners(
+    py::array_t<int,   py::array::c_style | py::array::forcecast> coords,
+    py::array_t<float, py::array::c_style | py::array::forcecast> corners) {
+
+    auto cbuf = coords.request();
+    auto vbuf = corners.request();
+    if (!(cbuf.ndim == 2 && cbuf.shape[1] == 3)) {
+        throw std::runtime_error("coords must be of shape [N,3] (int32)");
+    }
+    if (!(vbuf.ndim == 2 && vbuf.shape[1] == 8)) {
+        throw std::runtime_error("corners must be of shape [N,8] (float32)");
+    }
+    if (cbuf.shape[0] != vbuf.shape[0]) {
+        throw std::runtime_error("coords and corners must have the same first dimension N");
+    }
+
+    const int N = static_cast<int>(cbuf.shape[0]);
+    const int*   cptr = static_cast<const int*>(cbuf.ptr);
+    const float* fptr = static_cast<const float*>(vbuf.ptr);
+
+    int* outC = nullptr; float* outV = nullptr; int M = 0;
+    std::tie(outC, outV, M) = cubvh::cpu::voxels2corners(cptr, fptr, N);
+
+    py::array_t<int>   coords_out({(py::ssize_t)M, (py::ssize_t)3});
+    py::array_t<float> values_out({(py::ssize_t)M});
+    if (M > 0) {
+        auto cob = coords_out.request(); auto vab = values_out.request();
+        int*   cO = static_cast<int*>(cob.ptr);
+        float* vO = static_cast<float*>(vab.ptr);
+        std::memcpy(cO, outC, sizeof(int) * 3 * (size_t)M);
+        std::memcpy(vO, outV, sizeof(float) * (size_t)M);
+    }
+    delete[] outC; delete[] outV;
+    return {coords_out, values_out};
+}
+
+// corners -> voxels: coords [M,3] int32, values [M] float32
+static std::pair<py::array_t<int>, py::array_t<float>> corners2voxels(
+    py::array_t<int,   py::array::c_style | py::array::forcecast> coords,
+    py::array_t<float, py::array::c_style | py::array::forcecast> values) {
+
+    auto cbuf = coords.request();
+    auto vbuf = values.request();
+    if (!(cbuf.ndim == 2 && cbuf.shape[1] == 3)) {
+        throw std::runtime_error("coords must be of shape [N,3] (int32)");
+    }
+    if (!(vbuf.ndim == 1)) {
+        throw std::runtime_error("values must be of shape [N] (float32)");
+    }
+    if (cbuf.shape[0] != vbuf.shape[0]) {
+        throw std::runtime_error("coords and values must have the same first dimension N");
+    }
+
+    const int N = static_cast<int>(cbuf.shape[0]);
+    const int*   cptr = static_cast<const int*>(cbuf.ptr);
+    const float* vptr = static_cast<const float*>(vbuf.ptr);
+
+    int* outC = nullptr; float* outCorners = nullptr; int M = 0;
+    std::tie(outC, outCorners, M) = cubvh::cpu::corners2voxels(cptr, vptr, N);
+
+    py::array_t<int>   coords_out({(py::ssize_t)M, (py::ssize_t)3});
+    py::array_t<float> corners_out({(py::ssize_t)M, (py::ssize_t)8});
+    if (M > 0) {
+        auto cob = coords_out.request(); auto vob = corners_out.request();
+        int*   cO = static_cast<int*>(cob.ptr);
+        float* vO = static_cast<float*>(vob.ptr);
+        std::memcpy(cO, outC, sizeof(int) * 3 * (size_t)M);
+        std::memcpy(vO, outCorners, sizeof(float) * 8 * (size_t)M);
+    }
+    delete[] outC; delete[] outCorners;
+    return {coords_out, corners_out};
 }
 
 } // namespace cubvh

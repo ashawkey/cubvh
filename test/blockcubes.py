@@ -348,11 +348,19 @@ def run(path):
             # CPU sparse marching cubes via Python wrapper
             coords_np = fine_active_cells_global.detach().cpu().numpy().astype(np.int32)
             corners_np = fine_active_cells_sdf.detach().cpu().numpy().astype(np.float32)
-            vertices, triangles = cubvh.sparse_marching_cubes_cpu(coords_np, corners_np, float(0), True)
+            
+            # also test conversion
+            kiui.lo(coords_np, corners_np)
+            corner_coords, corner_values = cubvh.voxels2corners(coords_np, corners_np)
+            kiui.lo(corner_coords, corner_values)
+            coords_np, corners_np = cubvh.corners2voxels(corner_coords, corner_values)
+            kiui.lo(coords_np, corners_np)
+
+            vertices, triangles = cubvh.sparse_marching_cubes_cpu(coords_np, corners_np, 0, True)
             vertices = vertices.astype(np.float32)
             triangles = triangles.astype(np.int32)
         else:
-            vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0, ensure_consistency=True)
+            vertices, triangles = cubvh.sparse_marching_cubes(fine_active_cells_global, fine_active_cells_sdf, 0, True)
             vertices = vertices.detach().cpu().numpy()
             triangles = triangles.detach().cpu().numpy()
         vertices = vertices / res_fine * 2 - 1
@@ -360,7 +368,7 @@ def run(path):
 
         if opt.target_faces > 0:
             start_time = time.time()
-            vertices, triangles = decimate_mesh(vertices, triangles, 1e6, backend="omo")
+            vertices, triangles = decimate_mesh(vertices, triangles, 1e6, backend="omo", optimalplacement=False)
             print(f'Decimation time: {time.time() - start_time:.2f}s')
 
         start_time = time.time()
