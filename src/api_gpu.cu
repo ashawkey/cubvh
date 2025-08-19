@@ -1,8 +1,8 @@
-#include <cubvh/api.h>
-#include <cubvh/common.h>
-#include <cubvh/bvh.cuh>
-#include <cubvh/floodfill.cuh>
-#include <cubvh/spcumc.cuh>
+#include <gpu/api_gpu.h>
+#include <gpu/common.h>
+#include <gpu/bvh.cuh>
+#include <gpu/floodfill.cuh>
+#include <gpu/spcumc.cuh>
 
 #include <Eigen/Dense>
 

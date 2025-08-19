@@ -1,9 +1,9 @@
 #pragma once
 
-#include <cubvh/common.h>
-#include <cubvh/triangle.cuh>
-#include <cubvh/bounding_box.cuh>
-#include <cubvh/gpu_memory.h>
+#include <gpu/common.h>
+#include <gpu/triangle.cuh>
+#include <gpu/bounding_box.cuh>
+#include <gpu/gpu_memory.h>
 
 #include <memory>
 

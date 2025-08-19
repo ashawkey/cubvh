@@ -73,7 +73,7 @@ setup(
 			name='_cubvh', # extension name, import this to use CUDA API
 			sources=[os.path.join(_src_path, 'src', f) for f in [
 				'bvh.cu',
-				'api.cu',
+				'api_gpu.cu',
 				'bindings.cpp',
 			]],
 			include_dirs=[

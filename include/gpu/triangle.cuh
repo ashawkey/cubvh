@@ -1,6 +1,6 @@
 #pragma once
 
-#include <cubvh/common.h>
+#include <gpu/common.h>
 
 namespace cubvh {
 

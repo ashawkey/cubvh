@@ -31,7 +31,7 @@
 
 #pragma once
 
-#include <cubvh/common.h>
+#include <gpu/common.h>
 #include <atomic>
 #include <stdexcept>
 #include <stdint.h>

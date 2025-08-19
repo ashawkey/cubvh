@@ -4,7 +4,7 @@
 #include <pybind11/numpy.h>
 #include <pybind11/eigen.h>
 
-#include <cubvh/api.h>
+#include <gpu/api_gpu.h>
 #include <cpu/api_cpu.h>
 
 
@@ -23,12 +23,30 @@ m.def("create_cuBVH", &create_cuBVH);
 
 m.def("floodfill", &floodfill);
 
-m.def("sparse_marching_cubes", &sparse_marching_cubes, py::arg("coords"), py::arg("corners"), py::arg("iso"), py::arg("ensure_consistency") = false);
+m.def("sparse_marching_cubes", &sparse_marching_cubes, 
+    py::arg("coords"), py::arg("corners"), 
+    py::arg("iso"), 
+    py::arg("ensure_consistency") = false
+);
 
 // CPU API
-m.def("fill_holes", &fill_holes);
-m.def("merge_vertices", &merge_vertices, py::arg("vertices"), py::arg("faces"), py::arg("threshold"));
+m.def("fill_holes", &fill_holes,
+    py::arg("vertices"), py::arg("faces"),
+    py::arg("return_added") = false,
+    py::arg("check_containment") = true,
+    py::arg("eps") = 1e-6,
+    py::arg("verbose") = false
+);
+
+m.def("merge_vertices", &merge_vertices, 
+    py::arg("vertices"), py::arg("faces"), 
+    py::arg("threshold")
+);
+
 m.def("sparse_marching_cubes_cpu", &sparse_marching_cubes_cpu,
-    py::arg("coords"), py::arg("corners"), py::arg("iso"), py::arg("ensure_consistency") = false);
+    py::arg("coords"), py::arg("corners"), 
+    py::arg("iso"), 
+    py::arg("ensure_consistency") = false
+);
 
 }

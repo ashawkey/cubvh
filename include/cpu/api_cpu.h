@@ -144,7 +144,7 @@ static std::pair<py::array_t<float>, py::array_t<int>> sparse_marching_cubes_cpu
     const float* fptr = static_cast<const float*>(vbuf.ptr);
     const float iso = static_cast<float>(iso_d);
 
-    auto mesh = _sparse_marching_cubes(cptr, fptr, N, iso, ensure_consistency);
+    auto mesh = cubvh::cpu::sparse_marching_cubes(cptr, fptr, N, iso, ensure_consistency);
     const auto& V = mesh.first;
     const auto& F = mesh.second;
 

@@ -11,6 +11,9 @@
 // CPU implementation of the same sparse marching cubes algorithm
 // as include/cubvh/spcumc.cuh, but using standard C++ containers.
 
+namespace cubvh {
+namespace cpu {
+
 // Types mirroring CUDA version
 struct V3f { float x, y, z; };
 struct Tri { int v0, v1, v2; };
@@ -351,7 +354,7 @@ inline int popcnt12(int m) {
 
 // CPU sparse marching cubes core
 inline std::pair<std::vector<V3f>, std::vector<Tri>>
-_sparse_marching_cubes(const int* coords, const float* corners, int N, float iso, bool ensure_consistency)
+sparse_marching_cubes(const int* coords, const float* corners, int N, float iso, bool ensure_consistency)
 {
 	std::vector<V3f> vertices;
 	std::vector<Tri> triangles;
@@ -461,3 +464,6 @@ _sparse_marching_cubes(const int* coords, const float* corners, int N, float iso
 
 	return {std::move(vertices), std::move(triangles)};
 }
+
+} // namespace cpu
+} // namespace cubvh

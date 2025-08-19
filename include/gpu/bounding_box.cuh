@@ -1,7 +1,7 @@
 #pragma once
 
-#include <cubvh/common.h>
-#include <cubvh/triangle.cuh>
+#include <gpu/common.h>
+#include <gpu/triangle.cuh>
 
 namespace cubvh {
 
