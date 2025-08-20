@@ -141,6 +141,112 @@ __host__ __device__ void sorting_network(T values[N]) {
 template <uint32_t BRANCHING_FACTOR>
 class TriangleBvhWithBranchingFactor : public TriangleBvh {
 public:
+    // Stackless traversal using threaded BVH (escape links). Assumes escape_idx is populated.
+    __host__ __device__ static std::pair<int, float> ray_intersect_stackless(Ref<const Vector3f> ro, Ref<const Vector3f> rd, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles) {
+        float mint = MAX_DIST;
+        int shortest_idx = -1;
+
+        int idx = 0;
+        while (idx != -1) {
+            const TriangleBvhNode& node = bvhnodes[idx];
+
+            float tbb = node.bb.ray_intersect(ro, rd).x();
+            if (tbb >= mint) {
+                idx = node.escape_idx;
+                continue;
+            }
+
+            if (node.left_idx < 0) {
+                int end = -node.right_idx-1;
+                for (int i = -node.left_idx-1; i < end; ++i) {
+                    float t = triangles[i].ray_intersect(ro, rd);
+                    if (t < mint) {
+                        mint = t;
+                        shortest_idx = i;
+                    }
+                }
+                idx = node.escape_idx;
+            } else {
+                // descend first child; siblings are reached via escape links
+                idx = node.left_idx;
+            }
+        }
+
+        return {shortest_idx, mint};
+    }
+
+    __host__ __device__ static std::pair<int, float> closest_triangle_stackless(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float max_distance_sq = MAX_DIST_SQ) {
+        float shortest_distance_sq = max_distance_sq;
+        int shortest_idx = -1;
+
+        int idx = 0;
+        while (idx != -1) {
+            const TriangleBvhNode& node = bvhnodes[idx];
+
+            float dbb = node.bb.distance_sq(point);
+            if (dbb > shortest_distance_sq) {
+                idx = node.escape_idx;
+                continue;
+            }
+
+            if (node.left_idx < 0) {
+                int end = -node.right_idx-1;
+                for (int i = -node.left_idx-1; i < end; ++i) {
+                    float dist_sq = triangles[i].distance_sq(point);
+                    if (dist_sq <= shortest_distance_sq) {
+                        shortest_distance_sq = dist_sq;
+                        shortest_idx = i;
+                    }
+                }
+                idx = node.escape_idx;
+            } else {
+                idx = node.left_idx;
+            }
+        }
+
+        if (shortest_idx == -1) {
+            shortest_idx = 0;
+            shortest_distance_sq = 0.0f;
+        }
+
+        return {shortest_idx, std::sqrt(shortest_distance_sq)};
+    }
+
+    // For normal averaging around a point on the surface. Returns unnormalized normal.
+    __host__ __device__ static Vector3f avg_normal_around_point_stackless(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles) {
+        static constexpr float EPSILON = 1e-6f;
+
+        float total_weight = 0;
+        Vector3f result = Vector3f::Zero();
+
+        int idx = 0;
+        while (idx != -1) {
+            const TriangleBvhNode& node = bvhnodes[idx];
+
+            float dbb = node.bb.distance_sq(point);
+            if (dbb >= EPSILON) {
+                idx = node.escape_idx;
+                continue;
+            }
+
+            if (node.left_idx < 0) {
+                int end = -node.right_idx-1;
+                for (int i = -node.left_idx-1; i < end; ++i) {
+                    if (triangles[i].distance_sq(point) < EPSILON) {
+                        float weight = 1; // TODO: cot weight
+                        result += triangles[i].normal();
+                        total_weight += weight;
+                    }
+                }
+                idx = node.escape_idx;
+            } else {
+                idx = node.left_idx;
+            }
+        }
+
+        return result / total_weight;
+    }
+
     __host__ __device__ static std::pair<int, float> ray_intersect(Ref<const Vector3f> ro, Ref<const Vector3f> rd, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles) {
         FixedIntStack query_stack;
         query_stack.push(0);
@@ -180,6 +286,11 @@ public:
                         query_stack.push(children[i].idx);
                     }
                 }
+            }
+
+            if (query_stack.overflowed()) {
+                // Fallback to stackless traversal to guarantee correctness
+                return ray_intersect_stackless(ro, rd, bvhnodes, triangles);
             }
         }
 
@@ -226,6 +337,10 @@ public:
                     }
                 }
             }
+
+            if (query_stack.overflowed()) {
+                return closest_triangle_stackless(point, bvhnodes, triangles, shortest_distance_sq);
+            }
         }
 
         if (shortest_idx == -1) {
@@ -239,8 +354,8 @@ public:
 
     // Assumes that "point" is a location on a triangle
     __host__ __device__ static Vector3f avg_normal_around_point(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles) {
-        FixedIntStack query_stack;
-        query_stack.push(0);
+    FixedIntStack query_stack;
+    query_stack.push(0);
 
         static constexpr float EPSILON = 1e-6f;
 
@@ -271,6 +386,10 @@ public:
                     }
                 }
             }
+        }
+
+        if (query_stack.overflowed()) {
+            return avg_normal_around_point_stackless(point, bvhnodes, triangles);
         }
 
         return result / total_weight;
@@ -394,7 +513,7 @@ public:
         std::stack<BuildNode> build_stack;
         build_stack.push({0, std::begin(triangles), std::end(triangles)});
 
-        while (!build_stack.empty()) {
+    while (!build_stack.empty()) {
             const BuildNode& curr = build_stack.top();
             size_t node_idx = curr.node_idx;
 
@@ -456,6 +575,27 @@ public:
                 }
             }
             m_nodes[node_idx].right_idx = (int)m_nodes.size();
+        }
+
+        // Thread the BVH with escape links for stackless traversal.
+        // Initialize all escape indices to -1.
+        for (auto& n : m_nodes) n.escape_idx = -1;
+
+        // Recursive lambda to assign escape links in pre-order (child order 0..BRANCHING_FACTOR-1)
+        std::function<void(int,int)> thread_bvh = [&](int node_idx, int escape_idx) {
+            TriangleBvhNode& node = m_nodes[node_idx];
+            node.escape_idx = escape_idx;
+            if (node.left_idx < 0) return; // leaf
+            int first_child = node.left_idx;
+            int end_child = node.right_idx; // exclusive
+            for (int c = first_child; c < end_child; ++c) {
+                int next_escape = (c+1 < end_child) ? (c+1) : escape_idx;
+                thread_bvh(c, next_escape);
+            }
+        };
+
+        if (!m_nodes.empty()) {
+            thread_bvh(0, -1);
         }
 
         m_nodes_gpu.resize_and_copy_from_host(m_nodes);

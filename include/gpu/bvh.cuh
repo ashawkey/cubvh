@@ -13,6 +13,9 @@ struct TriangleBvhNode {
     BoundingBox bb;
     int left_idx; // negative values indicate leaves
     int right_idx;
+    // Threaded BVH escape index for stackless traversal: index of the next node
+    // to visit after finishing this node's subtree. -1 indicates termination.
+    int escape_idx;
 };
 
 
@@ -20,8 +23,13 @@ template <typename T, int MAX_SIZE=32>
 class FixedStack {
 public:
     __host__ __device__ void push(T val) {
-        if (m_count >= MAX_SIZE-1) {
-            printf("WARNING TOO BIG\n");
+        // If overflowing, flag and drop the push; a stackless fallback will be used.
+        if (m_count >= MAX_SIZE) {
+            if (!m_overflowed) {
+                printf("WARNING TOO BIG (stack overflow)\n");
+            }
+            m_overflowed = true;
+            return;
         }
         m_elems[m_count++] = val;
     }
@@ -34,9 +42,14 @@ public:
         return m_count <= 0;
     }
 
+    __host__ __device__ bool overflowed() const {
+        return m_overflowed;
+    }
+
 private:
     T m_elems[MAX_SIZE];
     int m_count = 0;
+    bool m_overflowed = false;
 };
 
 using FixedIntStack = FixedStack<int>;
