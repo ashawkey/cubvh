@@ -29,6 +29,9 @@ m.def("sparse_marching_cubes", &sparse_marching_cubes,
     py::arg("ensure_consistency") = false
 );
 
+// sparse erosion
+m.def("sparse_erode", &sparse_erode, py::arg("coords"));
+
 // CPU API
 m.def("fill_holes", &fill_holes,
     py::arg("vertices"), py::arg("faces"),

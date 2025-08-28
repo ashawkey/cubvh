@@ -143,6 +143,19 @@ def sparse_marching_cubes(coords, corners, iso, ensure_consistency=False):
 
     return verts, tris
 
+def sparse_erode(coords: torch.Tensor) -> torch.Tensor:
+    """Sparse morphological erosion by one voxel (6-neighbour) on a 3D binary volume.
+    Args:
+        coords: (N,3) int32 tensor of occupied voxel coordinates (on CPU or CUDA)
+    Returns:
+        mask: (N,) bool tensor where True means the voxel remains after erosion.
+    """
+    coords = coords.int().contiguous()
+    if not coords.is_cuda:
+        coords = coords.cuda()
+    mask = _backend.sparse_erode(coords)
+    return mask
+
 # CPU hole filling numpy API
 def fill_holes(vertices: np.ndarray, faces: np.ndarray, return_added: bool = False, check_containment: bool = True, eps: float = 1e-7, verbose: bool = False) -> np.ndarray:
     """

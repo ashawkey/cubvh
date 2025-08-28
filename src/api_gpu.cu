@@ -3,6 +3,7 @@
 #include <gpu/bvh.cuh>
 #include <gpu/floodfill.cuh>
 #include <gpu/spcumc.cuh>
+#include <gpu/sperode.cuh>
 
 #include <Eigen/Dense>
 
@@ -150,6 +151,22 @@ std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(
     cudaStreamSynchronize(stream);
 
     return {verts, tris};
+}
+
+at::Tensor sparse_erode(at::Tensor coords) {
+    TORCH_CHECK(coords.is_cuda(),  "coords must reside on CUDA");
+    TORCH_CHECK(coords.dtype()  == at::kInt,   "coords must be int32");
+    TORCH_CHECK(coords.sizes().size()  == 2 && coords.size(1)  == 3,
+                "coords must be of shape [N,3]");
+    coords = coords.contiguous();
+    const int N = static_cast<int>(coords.size(0));
+    auto opts_b = torch::TensorOptions().dtype(torch::kBool).device(coords.device());
+    at::Tensor mask = at::empty({N}, opts_b);
+
+    // Call CUDA implementation on current stream
+    cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+    _sparse_erode(coords.data_ptr<int>(), N, mask.data_ptr<bool>(), stream);
+    return mask;
 }
 
 

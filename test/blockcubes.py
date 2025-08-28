@@ -306,7 +306,7 @@ def run(path):
 
     print(f'Fine level time: {time.time() - start_time:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')
 
-    ### TODO save the sparse voxels as output format.
+    ### save the sparse voxels as output format.
     if opt.save:
         kiui.lo(fine_active_cells_global, fine_active_cells_sdf)
         fine_active_cells_np = fine_active_cells_global.cpu().numpy()
