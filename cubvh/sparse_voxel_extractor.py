@@ -107,7 +107,31 @@ class SparseVoxelExtractor:
         udf, _, _ = self.bvh.unsigned_distance(self.grid_points.view(-1, 3), return_uvw=False)
         udf = udf.view(res + 1, res + 1, res + 1).contiguous()
 
+        # mark occupied voxels
         occ = udf < eps_fine
+        cube_diagonal_length = math.sqrt(3) / res
+        border_voxel_mask = torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
+        border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, :-1])
+        border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, 1:])
+        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, :-1])
+        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, 1:])
+        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, :-1])
+        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, 1:])
+        border_voxel_mask = border_voxel_mask <= cube_diagonal_length
+        # simple center-check
+        udf_center = F.avg_pool3d(udf[None, None], kernel_size=2, stride=1).squeeze()
+        border_voxel_mask &= (udf_center <= cube_diagonal_length)
+        # mark all 8 corners of border voxels as occupied
+        occ[:-1, :-1, :-1] |= border_voxel_mask
+        occ[:-1, :-1, 1:] |= border_voxel_mask
+        occ[:-1, 1:, :-1] |= border_voxel_mask
+        occ[:-1, 1:, 1:] |= border_voxel_mask
+        occ[1:, :-1, :-1] |= border_voxel_mask
+        occ[1:, :-1, 1:] |= border_voxel_mask
+        occ[1:, 1:, :-1] |= border_voxel_mask
+        occ[1:, 1:, 1:] |= border_voxel_mask
+
+        # floodfill
         floodfill_mask = cubvh.floodfill(occ)
         empty_label = floodfill_mask[0, 0, 0].item()
         empty_mask = (floodfill_mask == empty_label)
@@ -137,19 +161,7 @@ class SparseVoxelExtractor:
         active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
         active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
 
-        # also keep voxels where the true border lies in (similar to a dilation)
-        cube_diagonal_length = math.sqrt(3) / res
-        border_voxel_mask = torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, :-1])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, 1:])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, :-1])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, 1:])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, :-1])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, 1:])
-        border_voxel_mask = border_voxel_mask <= cube_diagonal_length
-        # simple center-check
-        udf_center = F.avg_pool3d(udf[None, None], kernel_size=2, stride=1).squeeze()
-        border_voxel_mask &= (udf_center <= cube_diagonal_length)
+        # double confirm that border voxels are also active
         active_voxel_mask |= border_voxel_mask
 
         coords_indices = torch.nonzero(active_voxel_mask, as_tuple=True)
