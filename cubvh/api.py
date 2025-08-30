@@ -175,7 +175,8 @@ def fill_holes(vertices: np.ndarray, faces: np.ndarray, return_added: bool = Fal
     assert faces.ndim == 2 and faces.shape[1] == 3
     vertices = np.asarray(vertices, dtype=np.float32)
     faces = np.asarray(faces, dtype=np.int32)
-    return _backend.fill_holes(vertices, faces, return_added, check_containment, float(eps), bool(verbose))
+    faces = _backend.fill_holes(vertices, faces, return_added, check_containment, float(eps), bool(verbose))
+    return np.asarray(faces, dtype=np.int32)
 
 def merge_vertices(vertices: np.ndarray, faces: np.ndarray, threshold: float = 1e-3):
     """Merge vertices closer than threshold.
