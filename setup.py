@@ -95,5 +95,6 @@ setup(
 		'trimesh',
 		'torch',
 		'numpy',
+		'kiui',
 	],
 )

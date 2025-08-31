@@ -143,19 +143,6 @@ def sparse_marching_cubes(coords, corners, iso, ensure_consistency=False):
 
     return verts, tris
 
-def sparse_erode(coords: torch.Tensor) -> torch.Tensor:
-    """Sparse morphological erosion by one voxel (6-neighbour) on a 3D binary volume.
-    Args:
-        coords: (N,3) int32 tensor of occupied voxel coordinates (on CPU or CUDA)
-    Returns:
-        mask: (N,) bool tensor where True means the voxel remains after erosion.
-    """
-    coords = coords.int().contiguous()
-    if not coords.is_cuda:
-        coords = coords.cuda()
-    mask = _backend.sparse_erode(coords)
-    return mask
-
 # CPU hole filling numpy API
 def fill_holes(vertices: np.ndarray, faces: np.ndarray, return_added: bool = False, check_containment: bool = True, eps: float = 1e-7, verbose: bool = False) -> np.ndarray:
     """
@@ -215,35 +202,3 @@ def sparse_marching_cubes_cpu(coords, corners, iso: float, ensure_consistency: b
     assert corners.ndim == 2 and corners.shape[1] == 8, "corners must be [N,8]"
     v, f = _backend.sparse_marching_cubes_cpu(coords, corners, float(iso), bool(ensure_consistency))
     return np.asarray(v, dtype=np.float32), np.asarray(f, dtype=np.int32)
-
-
-def voxels2corners(coords: np.ndarray, corners: np.ndarray):
-    """Convert voxel grid representation to unique corners.
-    Args:
-        coords: (N,3) int32 voxel base coordinates
-        corners: (N,8) float32 voxel corner values
-    Returns:
-        (corner_coords, values): np.ndarray int32 [M,3], np.ndarray float32 [M]
-    """
-    coords = np.asarray(coords, dtype=np.int32)
-    corners = np.asarray(corners, dtype=np.float32)
-    assert coords.ndim == 2 and coords.shape[1] == 3
-    assert corners.ndim == 2 and corners.shape[1] == 8
-    c_out, v_out = _backend.voxels2corners(coords, corners)
-    return np.asarray(c_out, dtype=np.int32), np.asarray(v_out, dtype=np.float32)
-
-
-def corners2voxels(coords: np.ndarray, values: np.ndarray):
-    """Convert corner representation to voxels.
-    Args:
-        coords: (M,3) int32 corner coordinates
-        values: (M,) float32 corner values
-    Returns:
-        (voxel_coords, voxel_corners): np.ndarray int32 [N,3], np.ndarray float32 [N,8]
-    """
-    coords = np.asarray(coords, dtype=np.int32)
-    values = np.asarray(values, dtype=np.float32)
-    assert coords.ndim == 2 and coords.shape[1] == 3
-    assert values.ndim == 1 and values.shape[0] == coords.shape[0]
-    c_out, v_out = _backend.corners2voxels(coords, values)
-    return np.asarray(c_out, dtype=np.int32), np.asarray(v_out, dtype=np.float32)

@@ -3,6 +3,7 @@ import math
 import time
 from typing import Optional, Tuple
 
+import kiui
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -91,7 +92,7 @@ class SparseVoxelExtractor:
         }
         return out
 
-    def extract_sparse_voxels_coarse(self):
+    def extract_sparse_voxels_coarse(self, with_border: bool = True):
         """
         Perform coarse resolution extraction.
 
@@ -141,19 +142,20 @@ class SparseVoxelExtractor:
         active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
 
         # border voxels are also active
-        cube_diagonal_length = math.sqrt(3) / res
-        border_voxel_mask = torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, :-1])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, 1:])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, :-1])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, 1:])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, :-1])
-        border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, 1:])
-        border_voxel_mask = border_voxel_mask <= cube_diagonal_length
-        # simple center-check
-        udf_center = F.avg_pool3d(udf[None, None], kernel_size=2, stride=1).squeeze()
-        border_voxel_mask &= (udf_center <= cube_diagonal_length)
-        active_voxel_mask |= border_voxel_mask
+        if with_border:
+            cube_diagonal_length = math.sqrt(3) / res
+            border_voxel_mask = torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, :-1])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, 1:])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, :-1])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, 1:])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, :-1])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, 1:])
+            border_voxel_mask = border_voxel_mask <= cube_diagonal_length
+            # simple center-check
+            udf_center = F.avg_pool3d(udf[None, None], kernel_size=2, stride=1).squeeze()
+            border_voxel_mask &= (udf_center <= cube_diagonal_length)
+            active_voxel_mask |= border_voxel_mask
 
         coords_indices = torch.nonzero(active_voxel_mask, as_tuple=True)
         coords = torch.stack(coords_indices, dim=-1)  # [N,3]
@@ -181,18 +183,16 @@ class SparseVoxelExtractor:
             'coarse_sdfs': sdfs.float(),
         }
 
-    def extract_sparse_voxels_fine(self, coarse_coords: torch.Tensor, coarse_sdfs: torch.Tensor, return_diff: bool = True):
+    def extract_sparse_voxels_fine(self, coarse_coords: torch.Tensor, coarse_sdfs: torch.Tensor):
         """
         Perform fine resolution extraction given coarse outputs.
 
         Args:
             coarse_coords: (N,3) int32 coarse grid coords
             coarse_sdfs: (N,8) float32 coarse SDFs per voxel corner
-            return_diff: bool, if return the diff_detail metric.
 
         Returns a dict with keys:
         - occ_ratio: float (fine res)
-        - diff_detail: float, the difference between interpolated coarse sdf and actual fine sdf, measures how the fine mesh is different from coarse mesh.
         - coords: (M, 3) int32 fine grid coords
         - sdfs: (M, 8) float32 fine SDFs
         """
@@ -285,25 +285,6 @@ class SparseVoxelExtractor:
             'coords': coords.int(),
             'sdfs': sdfs.float(),
         }
-
-        # calculate diff between sdf_fine and sdf_coarse
-        if return_diff:
-            # convert 8 corners to 2x2x2 grid
-            coarse_sdfs_grid = torch.zeros(N, 2, 2, 2, device=self.device, dtype=torch.float32)
-            coarse_sdfs_grid[:, 0, 0, 0] = coarse_sdfs[:, 0]
-            coarse_sdfs_grid[:, 1, 0, 0] = coarse_sdfs[:, 1]
-            coarse_sdfs_grid[:, 1, 1, 0] = coarse_sdfs[:, 2]
-            coarse_sdfs_grid[:, 0, 1, 0] = coarse_sdfs[:, 3]
-            coarse_sdfs_grid[:, 0, 0, 1] = coarse_sdfs[:, 4]
-            coarse_sdfs_grid[:, 1, 0, 1] = coarse_sdfs[:, 5]
-            coarse_sdfs_grid[:, 1, 1, 1] = coarse_sdfs[:, 6]
-            coarse_sdfs_grid[:, 0, 1, 1] = coarse_sdfs[:, 7]
-            # interpolate from 2x2x2 to res_block+1 x res_block+1 x res_block+1
-            interp_sdfs = F.interpolate(coarse_sdfs_grid.unsqueeze(0), size=(res_block + 1, res_block + 1, res_block + 1), mode='trilinear', align_corners=True).squeeze(0) # [N, res_block+1, res_block+1, res_block+1]
-            diff_detail = torch.abs(interp_sdfs - sdf_fine).mean()
-            out['diff_detail'] = diff_detail
-            if self.verbose:
-                print(f'Diff detail: {diff_detail:.4f}')
 
         if self.verbose:
             print(f'Res: {res_fine}, time: {time.time() - t0:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')

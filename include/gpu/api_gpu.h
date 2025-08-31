@@ -32,8 +32,4 @@ at::Tensor floodfill(at::Tensor grid);
 // sparse marching cubes
 std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(at::Tensor coords, at::Tensor corners, double iso_d, bool ensure_consistency = false);
 
-// sparse erosion (binary morphology) on coordinate-sparse volume
-// coords: int32 CUDA tensor [N,3]; returns bool CUDA tensor [N]
-at::Tensor sparse_erode(at::Tensor coords);
-    
 } // namespace cubvh

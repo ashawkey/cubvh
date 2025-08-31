@@ -29,9 +29,6 @@ m.def("sparse_marching_cubes", &sparse_marching_cubes,
     py::arg("ensure_consistency") = false
 );
 
-// sparse erosion
-m.def("sparse_erode", &sparse_erode, py::arg("coords"));
-
 // CPU API
 m.def("fill_holes", &fill_holes,
     py::arg("vertices"), py::arg("faces"),
@@ -51,11 +48,4 @@ m.def("sparse_marching_cubes_cpu", &sparse_marching_cubes_cpu,
     py::arg("iso"), 
     py::arg("ensure_consistency") = false
 );
-
-// lattice/cell conversions
-m.def("voxels2corners", &voxels2corners,
-    py::arg("coords"), py::arg("corners"));
-m.def("corners2voxels", &corners2voxels,
-    py::arg("coords"), py::arg("values"));
-
 }

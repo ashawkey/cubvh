@@ -41,9 +41,14 @@ def run(path):
     triangles = torch.from_numpy(triangles).long().to(device)
     extractor.build_bvh(vertices, triangles)
 
-    out = extractor.extract_sparse_voxels()
-    coords = out['coords']
-    sdfs = out['sdfs']
+    if opt.res == opt.res_fine:
+        out = extractor.extract_sparse_voxels_coarse(with_border=False)
+        coords = out['coarse_coords']
+        sdfs = out['coarse_sdfs']
+    else:
+        out = extractor.extract_sparse_voxels()
+        coords = out['coords']
+        sdfs = out['sdfs']
 
     if opt.save:
         kiui.lo(coords, sdfs)
