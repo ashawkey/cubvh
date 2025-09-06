@@ -4,6 +4,7 @@
 #include <ATen/cuda/CUDAContext.h>
 #include <torch/torch.h>
 #include <cuda_runtime.h>
+#include <memory>
 
 using namespace Eigen;
 
@@ -25,11 +26,27 @@ public:
 
 // function to create an implementation of cuBVH
 cuBVH* create_cuBVH(Ref<const Verts> vertices, Ref<const Trigs> triangles);
-
 // floodfill
 at::Tensor floodfill(at::Tensor grid);
 
 // sparse marching cubes
 std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(at::Tensor coords, at::Tensor corners, double iso_d, bool ensure_consistency = false);
+
+// GPU ND integer hash table (default D=3) - abstract interface
+class cuHashTable {
+public:
+    cuHashTable() {}
+    virtual ~cuHashTable() {}
+    virtual void set_num_dims(int d) = 0;
+    virtual int get_num_dims() const = 0;
+    virtual void resize(int capacity) = 0;
+    virtual void prepare() = 0;
+    virtual void insert(at::Tensor coords) = 0;
+    virtual void build(at::Tensor coords) = 0;
+    virtual at::Tensor search(at::Tensor queries) const = 0;
+};
+
+// Factory to create an implementation of cuHashTable
+cuHashTable* create_cuHashTable();
 
 } // namespace cubvh

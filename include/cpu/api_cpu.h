@@ -5,6 +5,7 @@
 #include <cpu/fill_holes.h>
 #include <cpu/merge_vertices.h>
 // CPU sparse marching cubes
+#include <cpu/hashtable.h>
 #include <cpu/spmc.h>
 
 #include <vector>
@@ -170,5 +171,55 @@ static std::pair<py::array_t<float>, py::array_t<int>> sparse_marching_cubes_cpu
 
     return {v_out, f_out};
 }
+
+// CPU Hash Table bindings
+class HashTable {
+public:
+    HashTable() {}
+
+    void set_num_dims(int d) { ht.set_num_dims(d); }
+    int get_num_dims() const { return ht.get_num_dims(); }
+    void resize(int capacity) { ht.resize(capacity); }
+    void prepare() { ht.prepare(); }
+
+    void insert(at::Tensor coords) {
+        TORCH_CHECK(!coords.is_cuda(),  "coords must reside on CPU");
+        TORCH_CHECK(coords.dtype() == at::kInt, "coords must be int32");
+        TORCH_CHECK(coords.dim() == 2, "coords must be 2D [N,D]");
+        coords_ref_ = coords.contiguous();
+        const int N = (int)coords_ref_.size(0);
+        const int D = (int)coords_ref_.size(1);
+        ht.set_num_dims(D);
+        ht.insert(coords_ref_.data_ptr<int>(), N);
+    }
+
+    void build(at::Tensor coords) {
+        TORCH_CHECK(!coords.is_cuda(),  "coords must reside on CPU");
+        TORCH_CHECK(coords.dtype() == at::kInt, "coords must be int32");
+        TORCH_CHECK(coords.dim() == 2, "coords must be 2D [N,D]");
+        coords_ref_ = coords.contiguous();
+        const int N = (int)coords_ref_.size(0);
+        const int D = (int)coords_ref_.size(1);
+        ht.set_num_dims(D);
+        ht.build(coords_ref_.data_ptr<int>(), N);
+    }
+
+    at::Tensor search(at::Tensor queries) const {
+        TORCH_CHECK(!queries.is_cuda(),  "queries must reside on CPU");
+        TORCH_CHECK(queries.dtype() == at::kInt, "queries must be int32");
+        TORCH_CHECK(queries.dim() == 2, "queries must be 2D [M,D]");
+        TORCH_CHECK(ht.capacity > 0, "hash table is not built");
+        at::Tensor q = queries.contiguous();
+        const int M = (int)q.size(0);
+        auto opts_i = torch::TensorOptions().dtype(torch::kInt32).device(q.device());
+        at::Tensor out = at::empty({M}, opts_i);
+        ht.search(q.data_ptr<int>(), M, out.data_ptr<int>());
+        return out;
+    }
+
+private:
+    mutable HashTableIntCPU ht;
+    at::Tensor coords_ref_;
+};
 
 } // namespace cubvh

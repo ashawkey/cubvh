@@ -1,7 +1,10 @@
 import os
 import math
+from tabnanny import verbose
 import time
 from typing import Optional, Tuple
+
+import trimesh
 
 import kiui
 import numpy as np
@@ -9,6 +12,181 @@ import torch
 import torch.nn.functional as F
 
 import cubvh
+
+
+def sphere_normalize(vertices: np.ndarray) -> np.ndarray:
+    bmin = vertices.min(axis=0)
+    bmax = vertices.max(axis=0)
+    bcenter = (bmax + bmin) / 2
+    radius = np.linalg.norm(vertices - bcenter, axis=-1).max()
+    vertices = (vertices - bcenter) / (radius)
+    return vertices
+
+
+def box_normalize(vertices: np.ndarray, bound: float = 0.95) -> np.ndarray:
+    bmin = vertices.min(axis=0)
+    bmax = vertices.max(axis=0)
+    bcenter = (bmax + bmin) / 2
+    vertices = 2 * bound * (vertices - bcenter) / (bmax - bmin).max()
+    return vertices
+
+
+def compress_coords(coords: np.ndarray, res: int) -> np.ndarray:
+    # Flatten [N, 3] coords to a single uint64 (since 2048^3 exceeds uint32)
+    coords = coords.astype(np.uint64)
+    return coords[:, 0] * res * res + coords[:, 1] * res + coords[:, 2]
+
+
+def decompress_coords(compressed: np.ndarray, res: int) -> np.ndarray:
+    # Decompress a single uint64 to [3] coords
+    x = compressed // (res * res)
+    y = (compressed % (res * res)) // res
+    z = compressed % res
+    return np.stack([x, y, z], axis=-1)
+
+
+def quantize_sdf(sdf: np.ndarray, resolution: int) -> Tuple[np.ndarray, float]:
+    """
+    Quantize 8-corner SDF values per voxel into packed uint64.
+
+    Args:
+        sdf: (N, 8) float32 signed distances in [-1, 1] normalization.
+        resolution: fine resolution used to scale delta.
+
+    Returns:
+        packed: (N,) uint64 packed 8x8-bit codes (little endian, corner 0 in LSB).
+        delta: float quantization step for de-quantization.
+    """
+    if sdf.ndim != 2 or sdf.shape[1] != 8:
+        raise ValueError("sdf must have shape [N, 8]")
+    delta = 2 / resolution * math.sqrt(3) / 127.0
+    mag = np.rint(np.clip(np.abs(sdf) / delta, 0, 127)).astype(np.uint8)
+    sign = (sdf < 0).astype(np.uint8) << 7
+    codes = (sign | mag).astype(np.uint8)  # (N, 8)
+    shifts = (np.arange(8, dtype=np.uint64) * 8)[None, :]
+    packed = np.sum((codes.astype(np.uint64) << shifts), axis=1, dtype=np.uint64)
+    return packed, delta
+
+
+def dequantize_sdf(packed: np.ndarray, resolution: Optional[int] = None) -> np.ndarray:
+    if packed.dtype != np.uint64:
+        raise ValueError("packed must be dtype uint64")
+    shifts = (np.arange(8, dtype=np.uint64) * 8)[None, :]
+    bytes_ = ((packed[:, None] >> shifts) & 0xFF).astype(np.uint8)  # (N, 8)
+    sign = ((bytes_ >> 7) & 1).astype(np.int8)
+    sdf = (bytes_ & 0x7F).astype(np.float32) / 127.0
+    if resolution is not None:
+        sdf = sdf * (2 / resolution * math.sqrt(3))
+    sdf[sign == 1] *= -1.0
+    return sdf
+
+
+def save_quantized(coords: torch.Tensor, sdf: torch.Tensor, out_path: str, resolution: int) -> float:
+    """
+    Save quantized sparse voxel data to NPZ.
+
+    Args:
+        coords: (M, 3) int grid coords
+        sdf: (M, 8) float truncated SDF per corner (normalized as produced)
+        out_path: path without extension or with .npz
+        resolution: fine grid resolution used for compression/quantization
+
+    Returns:
+        quant_delta: float delta used during quantization
+    """
+    coords_np = coords.detach().cpu().numpy()
+    sdf_np = sdf.detach().cpu().numpy()
+
+    coords_q = compress_coords(coords_np, int(resolution))
+    sdf_q, delta = quantize_sdf(sdf_np, int(resolution))
+
+    if not out_path.endswith('.npz'):
+        out_path = out_path + '.npz'
+    dirpath = os.path.dirname(out_path)
+    if dirpath:
+        os.makedirs(dirpath, exist_ok=True)
+    np.savez_compressed(out_path, coords=coords_q, sdfs=sdf_q)
+    return delta
+
+
+def load_quantized(in_path: str, device: torch.device, resolution: int, normalized_tsdf: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
+    """
+    Load quantized sparse voxel data from NPZ and dequantize.
+
+    Args:
+        in_path: path to .npz file
+        device: torch device for returned tensors
+        resolution: fine grid resolution used for decompression/dequantization
+        normalized_tsdf: if True, return normalized tsdf in [-1, 1] scale (no resolution scaling)
+                         matching prior behavior. If False, scale using resolution.
+
+    Returns:
+        coords: (M, 3) int32 tensor on device
+        sdf: (M, 8) float32 tensor on device
+    """
+    data = np.load(in_path)
+    coords_q = data['coords']
+    sdf_q = data['sdfs']
+
+    coords_np = decompress_coords(coords_q, int(resolution))
+    if normalized_tsdf:
+        sdf_np = dequantize_sdf(sdf_q)
+    else:
+        sdf_np = dequantize_sdf(sdf_q, int(resolution))
+    dev = torch.device(device)
+    coords = torch.from_numpy(coords_np).int().to(dev)
+    sdf = torch.from_numpy(sdf_np).float().to(dev)
+    return coords, sdf
+
+
+def extract_mesh(
+    coords: torch.Tensor,
+    sdf: torch.Tensor,
+    resolution: int,
+    cpu_mc: bool = False,
+    target_faces: int = 0,
+    verbose: bool = True,
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Extract mesh from sparse voxels and post-process.
+
+    Args:
+        coords: (M,3) int32 tensor on device
+        sdf: (M,8) float32 tensor on device
+        cpu_mc: if True, use CPU marching cubes; else CUDA kernel
+        target_faces: if > 0, decimate afterwards
+        verbose: print timing
+
+    Returns:
+        vertices: (V,3) float32 numpy in [-1,1]
+        triangles: (F,3) int32 numpy
+    """
+    t0 = time.time()
+    if cpu_mc:
+        coords_np = coords.detach().cpu().numpy().astype(np.int32)
+        corners_np = sdf.detach().cpu().numpy().astype(np.float32)
+        vertices, triangles = cubvh.sparse_marching_cubes_cpu(coords_np, corners_np, 0, True)
+        vertices = vertices.astype(np.float32)
+        triangles = triangles.astype(np.int32)
+    else:
+        vertices_t, triangles_t = cubvh.sparse_marching_cubes(coords, sdf, 0, True)
+        vertices = vertices_t.detach().cpu().numpy()
+        triangles = triangles_t.detach().cpu().numpy()
+
+    # map to [-1, 1]
+    vertices = vertices / int(resolution) * 2 - 1
+    if verbose:
+        print(f'Mesh extraction time: {time.time() - t0:.2f}s')
+
+    # Optional decimation (defer importing kiui/mesh_utils until needed)
+    if target_faces and target_faces > 0:
+        from kiui.mesh_utils import decimate_mesh
+        t0 = time.time()
+        vertices, triangles = decimate_mesh(vertices, triangles, 1e6, backend="omo", optimalplacement=False)
+        if verbose:
+            print(f'Decimation time: {time.time() - t0:.2f}s')
+
+    return vertices, triangles
 
 
 class SparseVoxelExtractor:
@@ -290,180 +468,3 @@ class SparseVoxelExtractor:
             print(f'Res: {res_fine}, time: {time.time() - t0:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')
 
         return out
-
-
-    @staticmethod
-    def sphere_normalize(vertices: np.ndarray) -> np.ndarray:
-        bmin = vertices.min(axis=0)
-        bmax = vertices.max(axis=0)
-        bcenter = (bmax + bmin) / 2
-        radius = np.linalg.norm(vertices - bcenter, axis=-1).max()
-        vertices = (vertices - bcenter) / (radius)
-        return vertices
-
-    @staticmethod
-    def box_normalize(vertices: np.ndarray, bound: float = 0.95) -> np.ndarray:
-        bmin = vertices.min(axis=0)
-        bmax = vertices.max(axis=0)
-        bcenter = (bmax + bmin) / 2
-        vertices = 2 * bound * (vertices - bcenter) / (bmax - bmin).max()
-        return vertices
-
-    @staticmethod
-    def compress_coords(coords: np.ndarray, res: int) -> np.ndarray:
-        # Flatten [N, 3] coords to a single uint64 (since 2048^3 exceeds uint32)
-        coords = coords.astype(np.uint64)
-        return coords[:, 0] * res * res + coords[:, 1] * res + coords[:, 2]
-
-    @staticmethod
-    def decompress_coords(compressed: np.ndarray, res: int) -> np.ndarray:
-        # Decompress a single uint64 to [3] coords
-        x = compressed // (res * res)
-        y = (compressed % (res * res)) // res
-        z = compressed % res
-        return np.stack([x, y, z], axis=-1)
-
-    @staticmethod
-    def quantize_sdf(sdf: np.ndarray, resolution: int) -> Tuple[np.ndarray, float]:
-        """
-        Quantize 8-corner SDF values per voxel into packed uint64.
-
-        Args:
-            sdf: (N, 8) float32 signed distances in [-1, 1] normalization.
-            resolution: fine resolution used to scale delta.
-
-        Returns:
-            packed: (N,) uint64 packed 8x8-bit codes (little endian, corner 0 in LSB).
-            delta: float quantization step for de-quantization.
-        """
-        if sdf.ndim != 2 or sdf.shape[1] != 8:
-            raise ValueError("sdf must have shape [N, 8]")
-        delta = 2 / resolution * math.sqrt(3) / 127.0
-        mag = np.rint(np.clip(np.abs(sdf) / delta, 0, 127)).astype(np.uint8)
-        sign = (sdf < 0).astype(np.uint8) << 7
-        codes = (sign | mag).astype(np.uint8)  # (N, 8)
-        shifts = (np.arange(8, dtype=np.uint64) * 8)[None, :]
-        packed = np.sum((codes.astype(np.uint64) << shifts), axis=1, dtype=np.uint64)
-        return packed, delta
-
-    @staticmethod
-    def dequantize_sdf(packed: np.ndarray, resolution: Optional[int] = None) -> np.ndarray:
-        if packed.dtype != np.uint64:
-            raise ValueError("packed must be dtype uint64")
-        shifts = (np.arange(8, dtype=np.uint64) * 8)[None, :]
-        bytes_ = ((packed[:, None] >> shifts) & 0xFF).astype(np.uint8)  # (N, 8)
-        sign = ((bytes_ >> 7) & 1).astype(np.int8)
-        sdf = (bytes_ & 0x7F).astype(np.float32) / 127.0
-        if resolution is not None:
-            sdf = sdf * (2 / resolution * math.sqrt(3))
-        sdf[sign == 1] *= -1.0
-        return sdf
-    
-    def save_quantized(self, coords: torch.Tensor, sdf: torch.Tensor, out_path: str) -> float:
-        """
-        Save quantized sparse voxel data to NPZ.
-
-        Args:
-            coords: (M, 3) int grid coords
-            sdf: (M, 8) float truncated SDF per corner (normalized as produced)
-            out_path: path without extension or with .npz
-
-        Returns:
-            quant_delta: float delta used during quantization
-        """
-        coords_np = coords.detach().cpu().numpy()
-        sdf_np = sdf.detach().cpu().numpy()
-
-        coords_q = self.compress_coords(coords_np, self.res_fine)
-        sdf_q, delta = self.quantize_sdf(sdf_np, self.res_fine)
-
-        if not out_path.endswith('.npz'):
-            out_path = out_path + '.npz'
-        os.makedirs(os.path.dirname(out_path), exist_ok=True)
-        np.savez_compressed(out_path, coords=coords_q, sdfs=sdf_q)
-        return delta
-
-    def load_quantized(self, in_path: str, normalized_tsdf: bool = True) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Load quantized sparse voxel data from NPZ and dequantize.
-
-        Args:
-            in_path: path to .npz file
-            normalized_tsdf: if True, return normalized tsdf in [-1, 1] scale (no resolution scaling)
-                              matching prior behavior. If False, scale using resolution.
-
-        Returns:
-            coords: (M, 3) int32 tensor on self.device
-            sdf: (M, 8) float32 tensor on self.device
-        """
-        data = np.load(in_path)
-        coords_q = data['coords']
-        sdf_q = data['sdfs']
-
-        coords = torch.from_numpy(self.decompress_coords(coords_q, self.res_fine)).int().to(self.device)
-        if normalized_tsdf:
-            sdf_np = self.dequantize_sdf(sdf_q)
-        else:
-            sdf_np = self.dequantize_sdf(sdf_q, self.res_fine)
-        sdf = torch.from_numpy(sdf_np).float().to(self.device)
-        return coords, sdf
-    
-    @staticmethod
-    def extract_mesh(
-        coords: torch.Tensor,
-        sdf: torch.Tensor,
-        resolution: int,
-        cpu_mc: bool = False,
-        target_faces: int = 0,
-        verbose: bool = True,
-    ) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Extract mesh from sparse voxels and post-process.
-
-        Args:
-            coords: (M,3) int32 tensor on device
-            sdf: (M,8) float32 tensor on device
-            cpu_mc: if True, use CPU marching cubes; else CUDA kernel
-            target_faces: if > 0, decimate afterwards
-            verbose: print timing
-
-        Returns:
-            vertices: (V,3) float32 numpy in [-1,1]
-            triangles: (F,3) int32 numpy
-        """
-        t0 = time.time()
-        if cpu_mc:
-            coords_np = coords.detach().cpu().numpy().astype(np.int32)
-            corners_np = sdf.detach().cpu().numpy().astype(np.float32)
-            vertices, triangles = cubvh.sparse_marching_cubes_cpu(coords_np, corners_np, 0, True)
-            vertices = vertices.astype(np.float32)
-            triangles = triangles.astype(np.int32)
-        else:
-            vertices_t, triangles_t = cubvh.sparse_marching_cubes(coords, sdf, 0, True)
-            vertices = vertices_t.detach().cpu().numpy()
-            triangles = triangles_t.detach().cpu().numpy()
-
-        # map to [-1, 1]
-        vertices = vertices / resolution * 2 - 1
-        if verbose:
-            print(f'Mesh extraction time: {time.time() - t0:.2f}s')
-
-        # merge and fill
-        # t0 = time.time()
-        # vertices, triangles = cubvh.merge_vertices(vertices, triangles, threshold=1 / resolution)
-        # if verbose:
-        #     print(f'Merge close vertices time: {time.time() - t0:.2f}s')
-        # t0 = time.time()
-        # triangles = cubvh.fill_holes(vertices, triangles)
-        # if verbose:
-        #     print(f'Fill holes time: {time.time() - t0:.2f}s')
-
-        # Optional decimation (defer importing kiui/mesh_utils until needed)
-        if target_faces and target_faces > 0:
-            from kiui.mesh_utils import decimate_mesh
-            t0 = time.time()
-            vertices, triangles = decimate_mesh(vertices, triangles, 1e6, backend="omo", optimalplacement=False)
-            if verbose:
-                print(f'Decimation time: {time.time() - t0:.2f}s')
-
-        return vertices, triangles

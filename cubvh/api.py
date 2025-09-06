@@ -82,7 +82,7 @@ class cuBVH():
 
         return distances, face_id, uvw
 
-    
+
     def signed_distance(self, positions, return_uvw=False, mode='watertight'):
         # positions: torch.Tensor, float, [N, 3]
 
@@ -127,6 +127,37 @@ def floodfill(grid):
 
     return mask
 
+
+class cuHashTable:
+    """
+    Python wrapper around the CUDA ND integer hash table.
+
+    - Default dimensionality is 3; can be changed via num_dims argument or set_num_dims.
+    - Static table: prefer a single build() call; repeated insert() calls overwrite indices.
+    """
+
+    def __init__(self, num_dims: int = 3):
+        # create implementation via factory (mirrors cuBVH style)
+        self.impl = _backend.create_cuHashTable()
+        self.impl.set_num_dims(int(num_dims))
+
+    @property
+    def num_dims(self) -> int:
+        return int(self.impl.get_num_dims())
+
+    def build(self, coords):
+        """Build table from coordinates: coords [N,D] int32/cuda.
+        Auto-sets capacity to max(16, 2*N)."""
+        if coords.shape[1] != self.num_dims:
+            self.impl.set_num_dims(int(coords.size(1)))
+        self.impl.build(coords)
+
+    def search(self, queries) -> torch.Tensor:
+        """Search queries [M,D] -> indices [M] int32 on CUDA; -1 if not found."""
+        assert queries.shape[1] == self.num_dims, f"queries must be {self.num_dims}D"
+        return self.impl.search(queries)
+
+    
 def sparse_marching_cubes(coords, corners, iso, ensure_consistency=False):
     # coords: torch.Tensor, int32, [N, 3]
     # corners: torch.Tensor, float32, [N, 8]
@@ -181,6 +212,33 @@ def merge_vertices(vertices: np.ndarray, faces: np.ndarray, threshold: float = 1
     v_new, f_new = _backend.merge_vertices(vertices, faces, float(threshold))
     return np.asarray(v_new, dtype=np.float32), np.asarray(f_new, dtype=np.int32)
 
+
+class HashTable:
+    """
+    CPU ND integer hash table (static, open-addressed). Mirrors cuHashTable but on host.
+    """
+    def __init__(self, num_dims: int = 3):
+        # constructed directly from backend class
+        self.impl = _backend.HashTable()
+        self.impl.set_num_dims(int(num_dims))
+
+    @property
+    def num_dims(self) -> int:
+        return int(self.impl.get_num_dims())
+
+    def build(self, coords):
+        """Build table from coordinates: coords [N,D] int32/CPU.
+        Auto-sets capacity to max(16, 2*N)."""
+        if coords.shape[1] != self.num_dims:
+            self.impl.set_num_dims(int(coords.shape[1]))
+        coords = coords.int().contiguous().cpu()
+        self.impl.build(coords)
+
+    def search(self, queries):
+        """Search queries [M,D] -> indices [M] int32/CPU; -1 if not found."""
+        assert queries.shape[1] == self.num_dims, f"queries must be {self.num_dims}D"
+        queries = queries.int().contiguous().cpu()
+        return self.impl.search(queries)
 
 def sparse_marching_cubes_cpu(coords, corners, iso: float, ensure_consistency: bool = False):
     """CPU sparse marching cubes wrapper.

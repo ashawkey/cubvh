@@ -8,7 +8,7 @@ import torch
 import cubvh
 
 import kiui
-from cubvh.sparse_voxel_extractor import SparseVoxelExtractor
+from cubvh.sparse_voxel_extractor import SparseVoxelExtractor, box_normalize, save_quantized, load_quantized, extract_mesh
 
 """
 Block-sparse marching cubes implementation.
@@ -35,31 +35,26 @@ def run(path):
     mesh = trimesh.load(path, process=False, force='mesh')
     vertices = mesh.vertices
     triangles = mesh.faces
-    vertices = SparseVoxelExtractor.box_normalize(vertices, bound=0.95)
+    vertices = box_normalize(vertices, bound=0.95)
 
     vertices = torch.from_numpy(vertices).float().to(device)
     triangles = torch.from_numpy(triangles).long().to(device)
     extractor.build_bvh(vertices, triangles)
 
-    if opt.res == opt.res_fine:
-        out = extractor.extract_sparse_voxels_coarse(with_border=False)
-        coords = out['coarse_coords']
-        sdfs = out['coarse_sdfs']
-    else:
-        out = extractor.extract_sparse_voxels()
-        coords = out['coords']
-        sdfs = out['sdfs']
+    out = extractor.extract_sparse_voxels()
+    coords = out['coords']
+    sdfs = out['sdfs']
 
     if opt.save:
         kiui.lo(coords, sdfs)
         out_npz = f'{opt.workspace}/{name}.npz'
-        _ = extractor.save_quantized(coords, sdfs, out_npz)
+        _ = save_quantized(coords, sdfs, out_npz, resolution=opt.res_fine)
         # round-trip load to match prior behavior
-        coords, sdfs = extractor.load_quantized(out_npz, normalized_tsdf=True)
+        coords, sdfs = load_quantized(out_npz, device=device, resolution=opt.res_fine, normalized_tsdf=True)
         kiui.lo(coords, sdfs) # the same
-
+    
     if opt.extract_mesh:
-        vertices, triangles = extractor.extract_mesh(
+        vertices, triangles = extract_mesh(
             coords,
             sdfs,
             resolution=opt.res_fine,

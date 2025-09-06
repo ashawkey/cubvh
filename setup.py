@@ -1,7 +1,4 @@
 import os
-import re
-import subprocess
-from pkg_resources import parse_version
 from setuptools import setup
 from torch.utils.cpp_extension import BuildExtension, CUDAExtension
 
@@ -62,17 +59,10 @@ python setup.py develop # build extensions and install (symbolic) to PATH.
 pip install -e . # ditto but better (e.g., dependency & metadata handling)
 '''
 setup(
-	name='cubvh', # package name, import this to use python API
-	version='0.1.1',
-	description='CUDA BVH implementation',
-	url='https://github.com/ashawkey/cubvh',
-	author='kiui',
-	author_email='ashawkey1999@gmail.com',
-	packages=['cubvh'],
 	ext_modules=[
 		CUDAExtension(
-			name='_cubvh', # extension name, import this to use CUDA API
-			sources=[os.path.join(_src_path, 'src', f) for f in [
+			name='_cubvh',
+			sources=[os.path.join('src', f) for f in [
 				'bvh.cu',
 				'api_gpu.cu',
 				'bindings.cpp',
@@ -90,12 +80,4 @@ setup(
 	cmdclass={
 		'build_ext': BuildExtension,
 	},
-	install_requires=[
-		'ninja',
-		'pybind11',
-		'trimesh',
-		'torch',
-		'numpy',
-		'kiui',
-	],
 )

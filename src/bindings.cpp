@@ -29,6 +29,18 @@ m.def("sparse_marching_cubes", &sparse_marching_cubes,
     py::arg("ensure_consistency") = false
 );
 
+// GPU Hash Table bindings
+py::class_<cuHashTable>(m, "cuHashTable")
+    .def("set_num_dims", &cuHashTable::set_num_dims)
+    .def("get_num_dims", &cuHashTable::get_num_dims)
+    .def("resize", &cuHashTable::resize)
+    .def("prepare", &cuHashTable::prepare)
+    .def("insert", &cuHashTable::insert, py::arg("coords"))
+    .def("build", &cuHashTable::build, py::arg("coords"))
+    .def("search", &cuHashTable::search, py::arg("queries"));
+
+m.def("create_cuHashTable", &create_cuHashTable);
+
 // CPU API
 m.def("fill_holes", &fill_holes,
     py::arg("vertices"), py::arg("faces"),
@@ -48,4 +60,15 @@ m.def("sparse_marching_cubes_cpu", &sparse_marching_cubes_cpu,
     py::arg("iso"), 
     py::arg("ensure_consistency") = false
 );
+
+// CPU Hash Table bindings
+py::class_<HashTable>(m, "HashTable")
+    .def(py::init<>())
+    .def("set_num_dims", &HashTable::set_num_dims)
+    .def("get_num_dims", &HashTable::get_num_dims)
+    .def("resize", &HashTable::resize)
+    .def("prepare", &HashTable::prepare)
+    .def("insert", &HashTable::insert, py::arg("coords"))
+    .def("build", &HashTable::build, py::arg("coords"))
+    .def("search", &HashTable::search, py::arg("queries"));
 }

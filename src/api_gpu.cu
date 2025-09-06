@@ -3,6 +3,7 @@
 #include <gpu/bvh.cuh>
 #include <gpu/floodfill.cuh>
 #include <gpu/spcumc.cuh>
+#include <gpu/hashtable.cuh>
 
 #include <Eigen/Dense>
 
@@ -150,6 +151,76 @@ std::tuple<at::Tensor, at::Tensor> sparse_marching_cubes(
     cudaStreamSynchronize(stream);
 
     return {verts, tris};
+}
+
+// ------------------------ GPU Hash Table bindings (virtual pattern) ----------
+
+class cuHashTableImpl : public cuHashTable {
+public:
+    cuHashTableImpl() {}
+    ~cuHashTableImpl() override {}
+
+    void set_num_dims(int d) override {
+        ht.set_num_dims(d);
+    }
+
+    int get_num_dims() const override {
+        return ht.num_dims;
+    }
+
+    void resize(int capacity) override {
+        ht.resize(capacity);
+    }
+
+    void prepare() override {
+        cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+        ht.prepare(stream);
+    }
+
+    void insert(at::Tensor coords) override {
+        TORCH_CHECK(coords.is_cuda(),  "coords must reside on CUDA");
+        TORCH_CHECK(coords.dtype()  == at::kInt,   "coords must be int32");
+        TORCH_CHECK(coords.dim() == 2, "coords must be 2D [N,D]");
+        coords = coords.contiguous();
+        const int N = (int)coords.size(0);
+        const int D = (int)coords.size(1);
+        ht.set_num_dims(D);
+        cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+        ht.insert(coords.data_ptr<int>(), N, stream);
+    }
+
+    void build(at::Tensor coords) override {
+        TORCH_CHECK(coords.is_cuda(),  "coords must reside on CUDA");
+        TORCH_CHECK(coords.dtype()  == at::kInt,   "coords must be int32");
+        TORCH_CHECK(coords.dim() == 2, "coords must be 2D [N,D]");
+        coords = coords.contiguous();
+        const int N = (int)coords.size(0);
+        const int D = (int)coords.size(1);
+        ht.set_num_dims(D);
+        cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+        ht.build(coords.data_ptr<int>(), N, stream);
+    }
+
+    at::Tensor search(at::Tensor queries) const override {
+        TORCH_CHECK(queries.is_cuda(),  "queries must reside on CUDA");
+        TORCH_CHECK(queries.dtype()  == at::kInt,   "queries must be int32");
+        TORCH_CHECK(queries.dim() == 2, "queries must be 2D [M,D]");
+        TORCH_CHECK(ht.capacity > 0, "hash table is not built");
+        at::Tensor q = queries.contiguous();
+        const int M = (int)q.size(0);
+        auto opts_i = torch::TensorOptions().dtype(torch::kInt32).device(q.device());
+        at::Tensor out = at::empty({M}, opts_i);
+        cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+        ht.search(q.data_ptr<int>(), M, out.data_ptr<int>(), stream);
+        return out;
+    }
+
+private:
+    HashTableInt ht;
+};
+
+cuHashTable* create_cuHashTable() {
+    return new cuHashTableImpl{};
 }
 
 } // namespace cubvh
