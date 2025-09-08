@@ -33,6 +33,7 @@ if os.name == "nt":
 cpp_standard = 17
 
 base_nvcc_flags = [
+	"-O3",
 	f"-std=c++{cpp_standard}",
 	"--extended-lambda",
 	"--expt-relaxed-constexpr",
@@ -44,13 +45,13 @@ base_nvcc_flags = [
 ]
 
 if os.name == "posix":
-	base_cflags = [f"-std=c++{cpp_standard}"]
+	base_cflags = ["-O3", f"-std=c++{cpp_standard}"]
 	base_nvcc_flags += [
 		"-Xcompiler=-Wno-float-conversion",
 		"-Xcompiler=-fno-strict-aliasing",
 	]
 elif os.name == "nt":
-	base_cflags = [f"/std:c++{cpp_standard}"]
+	base_cflags = ["/O2", f"/std:c++{cpp_standard}"]
 
 '''
 Usage:
