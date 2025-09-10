@@ -145,6 +145,7 @@ def extract_mesh(
     resolution: int,
     cpu_mc: bool = False,
     target_faces: int = 0,
+    ensure_consistency: bool = True,
     verbose: bool = True,
 ) -> Tuple[np.ndarray, np.ndarray]:
     """
@@ -155,6 +156,7 @@ def extract_mesh(
         sdf: (M,8) float32 tensor on device
         cpu_mc: if True, use CPU marching cubes; else CUDA kernel
         target_faces: if > 0, decimate afterwards
+        ensure_consistency: if True, average shared corners across voxels before extraction
         verbose: print timing
 
     Returns:
@@ -165,11 +167,11 @@ def extract_mesh(
     if cpu_mc:
         coords_np = coords.detach().cpu().numpy().astype(np.int32)
         corners_np = sdf.detach().cpu().numpy().astype(np.float32)
-        vertices, triangles = cubvh.sparse_marching_cubes_cpu(coords_np, corners_np, 0, True)
+        vertices, triangles = cubvh.sparse_marching_cubes_cpu(coords_np, corners_np, 0, ensure_consistency)
         vertices = vertices.astype(np.float32)
         triangles = triangles.astype(np.int32)
     else:
-        vertices_t, triangles_t = cubvh.sparse_marching_cubes(coords, sdf, 0, True)
+        vertices_t, triangles_t = cubvh.sparse_marching_cubes(coords, sdf, 0, ensure_consistency)
         vertices = vertices_t.detach().cpu().numpy()
         triangles = triangles_t.detach().cpu().numpy()
 
@@ -190,21 +192,17 @@ def extract_mesh(
 
 
 class SparseVoxelExtractor:
-    """
-    Block-sparse marching cubes pipeline.
-    - Hold resolution-dependent constants (grid_points, subgrid_offsets, eps_fine).
-    - Extract sparse voxels from a mesh surface using a coarse-to-fine BVH UDF query.
-    - Save/load quantized sparse voxel data (coords + 8-corner SDFs).
-    - Extract a mesh from sparse voxels using sparse marching cubes (CPU or CUDA).
-    """
 
     def __init__(self, min_res: int, res_fine: int, device: torch.device, verbose: bool = False):
+        self.device = device
+        # hierarchical querying resolutions [res, res*2, res*4, ... res_fine]
         self.res = int(min_res)
         self.res_fine = int(res_fine)
-        self.device = device
-        self.res_block = self.res_fine // self.res
-        # use fine epsilon as in original implementation
-        self.eps_fine = 2 / self.res_fine
+        self.num_levels = int(np.log2(self.res_fine // self.res))
+        # res_fine should be 2^res
+        assert self.res_fine == 2 ** self.num_levels * self.res
+        # fixed sub-block resolution
+        self.res_block = 2
         self.verbose = verbose
 
         # Precompute coarse grid points in NDC [-1, 1]
@@ -217,17 +215,6 @@ class SparseVoxelExtractor:
             ),
             dim=-1,
         ).contiguous()  # [res+1, res+1, res+1, 3]
-
-        # Subgrid offsets within each coarse cell for the fine sampling
-        self.subgrid_offsets = torch.stack(
-            torch.meshgrid(
-                torch.linspace(-1 / self.res, 1 / self.res, self.res_block + 1, device=self.device),
-                torch.linspace(-1 / self.res, 1 / self.res, self.res_block + 1, device=self.device),
-                torch.linspace(-1 / self.res, 1 / self.res, self.res_block + 1, device=self.device),
-                indexing="ij",
-            ),
-            dim=-1,
-        ).contiguous()  # [res_block+1, res_block+1, res_block+1, 3]
 
         self.bvh = None
     
@@ -258,36 +245,58 @@ class SparseVoxelExtractor:
         assert self.bvh is not None
     
         # Coarse extraction
-        coarse = self.extract_sparse_voxels_coarse()
+        res = self.res
+        out = self.extract_coarse_voxels(res, last_level=self.num_levels == 0)
 
-        # Fine extraction
-        fine = self.extract_sparse_voxels_fine(coarse['coarse_coords'], coarse['coarse_sdfs'])
+        vertices, triangles = extract_mesh(
+            out['coords'],
+            out['sdfs'],
+            resolution=res,
+            target_faces=0,
+            ensure_consistency=False,
+            verbose=True,
+        )
+        mesh = trimesh.Trimesh(vertices, triangles)
+        mesh.export(f'{res}.glb')
 
-        # Merge outputs for backward compatibility
-        out = {
-            **coarse,
-            **fine,
-        }
+        # Hierarchical Fine extraction
+        for level in range(self.num_levels):
+            res *= 2
+            last_level = level == self.num_levels - 1
+            out = self.extract_fine_voxels(res, out['coords'], out['sdfs'], last_level=last_level)
+
+            vertices, triangles = extract_mesh(
+                out['coords'],
+                out['sdfs'],
+                resolution=res,
+                target_faces=0,
+                ensure_consistency=False,
+                verbose=True,
+            )
+            mesh = trimesh.Trimesh(vertices, triangles)
+            mesh.export(f'{res}.glb')
+
         return out
 
-    def extract_sparse_voxels_coarse(self, with_border: bool = True):
+    def extract_coarse_voxels(self, res, last_level: bool = False):
         """
         Perform coarse resolution extraction.
 
         Returns a dict with keys:
-        - coarse_occ_ratio: float
-        - coarse_coords: (N, 3) int32
-        - coarse_sdfs: (N, 8) float32
+        - occ_ratio: float
+        - coords: (N, 3) int32
+        - sdfs: (N, 8) float32
         """
-        res = self.res
-        eps_fine = self.eps_fine
+        # eps for next level (res * 2)
+        eps = 2 / res
+        eps_fine = 1 / res
 
         t0 = time.time()
         udf, _, _ = self.bvh.unsigned_distance(self.grid_points.view(-1, 3), return_uvw=False)
         udf = udf.view(res + 1, res + 1, res + 1).contiguous()
 
         # mark occupied voxels
-        occ = udf < eps_fine
+        occ = udf < eps_fine if not last_level else udf < eps
 
         # floodfill
         floodfill_mask = cubvh.floodfill(occ)
@@ -297,10 +306,11 @@ class SparseVoxelExtractor:
         occ_ratio = occ_mask.sum().item() / (res + 1) ** 3
 
         # Truncated SDF (inner negative)
-        sdf = udf - eps_fine
+        sdf = udf - eps_fine if not last_level else udf - eps
         inner_mask = occ_mask & (sdf > 0)
         sdf[inner_mask] *= -1
-
+        kiui.lo(sdf, verbose=1)
+  
         # Coarse active voxels (sign change or near-surface border)
         sdf_000 = sdf[:-1, :-1, :-1]
         sdf_001 = sdf[:-1, :-1, 1:]
@@ -318,10 +328,10 @@ class SparseVoxelExtractor:
         active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_101)
         active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
         active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
+        print('coarse num active voxels: ', active_voxel_mask.sum().item())
 
-        # border voxels are also active
-        if with_border:
-            cube_diagonal_length = math.sqrt(3) / res
+        # add more voxels to make sure no fine voxels are left out
+        if not last_level:
             border_voxel_mask = torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
             border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, :-1])
             border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, 1:])
@@ -329,10 +339,7 @@ class SparseVoxelExtractor:
             border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, 1:])
             border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, :-1])
             border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, 1:])
-            border_voxel_mask = border_voxel_mask <= cube_diagonal_length
-            # simple center-check
-            udf_center = F.avg_pool3d(udf[None, None], kernel_size=2, stride=1).squeeze()
-            border_voxel_mask &= (udf_center <= cube_diagonal_length)
+            border_voxel_mask = border_voxel_mask <= eps
             active_voxel_mask |= border_voxel_mask
 
         coords_indices = torch.nonzero(active_voxel_mask, as_tuple=True)
@@ -353,15 +360,15 @@ class SparseVoxelExtractor:
         N = coords.shape[0]
 
         if self.verbose:
-            print(f'Res: {res}, time: {time.time() - t0:.2f}s, active cells: {N} / {res ** 3} = {N / res ** 3 * 100:.2f}%, occ: {occ_ratio:.4f}')
+            print(f'Coarse Res: {res}, time: {time.time() - t0:.2f}s, active cells: {N} / {res ** 3} = {N / res ** 3 * 100:.2f}%, occ: {occ_ratio:.4f}')
 
         return {
-            'coarse_occ_ratio': occ_ratio,
-            'coarse_coords': coords.int(),
-            'coarse_sdfs': sdfs.float(),
+            'occ_ratio': occ_ratio,
+            'coords': coords.int(),
+            'sdfs': sdfs.float(),
         }
 
-    def extract_sparse_voxels_fine(self, coarse_coords: torch.Tensor, coarse_sdfs: torch.Tensor):
+    def extract_fine_voxels(self, res: int, coarse_coords: torch.Tensor, coarse_sdfs: torch.Tensor, last_level: bool = False):
         """
         Perform fine resolution extraction given coarse outputs.
 
@@ -374,10 +381,9 @@ class SparseVoxelExtractor:
         - coords: (M, 3) int32 fine grid coords
         - sdfs: (M, 8) float32 fine SDFs
         """
-        res = self.res
-        res_fine = self.res_fine
-        res_block = self.res_block
-        eps_fine = self.eps_fine
+        res_coarse = res // 2 # previous level's resolution
+        eps = 2 / res
+        eps_fine = 1 / res
 
         # Ensure tensors are on device and expected dtype
         coarse_coords = coarse_coords.to(device=self.device).int()
@@ -385,16 +391,28 @@ class SparseVoxelExtractor:
 
         # Fine sampling over active cells only
         t0 = time.time()
-        coarse_voxel_centers = (coarse_coords + 0.5) / (res) * 2 - 1
+        coarse_voxel_centers = (coarse_coords + 0.5) / res_coarse * 2 - 1
         N = coarse_coords.shape[0]
-        fine_grid = coarse_voxel_centers.view(N, 1, 1, 1, 3) + self.subgrid_offsets.view(1, res_block + 1, res_block + 1, res_block + 1, 3)
-        fine_grid = fine_grid.view(-1, 3)
+
+        # Subgrid offsets within each coarse cell for the fine sampling
+        subgrid_offsets = torch.stack(
+            torch.meshgrid(
+                torch.linspace(-1 / res_coarse, 1 / res_coarse, self.res_block + 1, device=self.device),
+                torch.linspace(-1 / res_coarse, 1 / res_coarse, self.res_block + 1, device=self.device),
+                torch.linspace(-1 / res_coarse, 1 / res_coarse, self.res_block + 1, device=self.device),
+                indexing="ij",
+            ),
+            dim=-1,
+        ).contiguous()  # [res_block+1, res_block+1, res_block+1, 3]
+
+        grid_points = coarse_voxel_centers.view(N, 1, 1, 1, 3) + subgrid_offsets.view(1, self.res_block + 1, self.res_block + 1, self.res_block + 1, 3)
+        grid_points = grid_points.view(-1, 3) # TODO: lots of duplication here, maybe optimize?
 
         # batched flood fill
-        udf_fine, _, _ = self.bvh.unsigned_distance(fine_grid, return_uvw=False)
-        udf_fine = udf_fine.view(N, res_block + 1, res_block + 1, res_block + 1).contiguous()
-        occ_fine = udf_fine < eps_fine
-        ff_mask = cubvh.floodfill(occ_fine) # [N, res_block + 1, res_block + 1, res_block + 1]
+        udf, _, _ = self.bvh.unsigned_distance(grid_points, return_uvw=False)
+        udf = udf.view(N, self.res_block + 1, self.res_block + 1, self.res_block + 1).contiguous()
+        occ = udf < eps_fine if not last_level else udf < eps
+        ff_mask = cubvh.floodfill(occ) # [N, self.res_block + 1, self.res_block + 1, self.res_block + 1]
 
         # we need to find out the empty label for each batch (take care of ALL corners with positive sdf!)
         # get the corners of the ff_mask
@@ -408,56 +426,71 @@ class SparseVoxelExtractor:
             ff_mask[:, -1, -1, -1],
             ff_mask[:, 0, -1, -1],
         ], dim=1)
-        fine_empty_mask = torch.zeros_like(ff_mask, dtype=torch.bool)
-        fine_empty_mask |= (ff_corners[:, 0].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 0] > 0).view(-1, 1, 1, 1)
-        fine_empty_mask |= (ff_corners[:, 1].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 1] > 0).view(-1, 1, 1, 1)
-        fine_empty_mask |= (ff_corners[:, 2].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 2] > 0).view(-1, 1, 1, 1)
-        fine_empty_mask |= (ff_corners[:, 3].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 3] > 0).view(-1, 1, 1, 1)
-        fine_empty_mask |= (ff_corners[:, 4].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 4] > 0).view(-1, 1, 1, 1)
-        fine_empty_mask |= (ff_corners[:, 5].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 5] > 0).view(-1, 1, 1, 1)
-        fine_empty_mask |= (ff_corners[:, 6].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 6] > 0).view(-1, 1, 1, 1)
-        fine_empty_mask |= (ff_corners[:, 7].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 7] > 0).view(-1, 1, 1, 1)
-        fine_occ_mask = ~fine_empty_mask
+        empty_mask = torch.zeros_like(ff_mask, dtype=torch.bool)
+        empty_mask |= (ff_corners[:, 0].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 0] > 0).view(-1, 1, 1, 1)
+        empty_mask |= (ff_corners[:, 1].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 1] > 0).view(-1, 1, 1, 1)
+        empty_mask |= (ff_corners[:, 2].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 2] > 0).view(-1, 1, 1, 1)
+        empty_mask |= (ff_corners[:, 3].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 3] > 0).view(-1, 1, 1, 1)
+        empty_mask |= (ff_corners[:, 4].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 4] > 0).view(-1, 1, 1, 1)
+        empty_mask |= (ff_corners[:, 5].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 5] > 0).view(-1, 1, 1, 1)
+        empty_mask |= (ff_corners[:, 6].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 6] > 0).view(-1, 1, 1, 1)
+        empty_mask |= (ff_corners[:, 7].view(-1, 1, 1, 1) == ff_mask) & (coarse_sdfs[:, 7] > 0).view(-1, 1, 1, 1)
+        occ_mask = ~empty_mask
 
-        sdf_fine = udf_fine - eps_fine # [N, res_block+1, res_block+1, res_block+1]
-        fine_inner_mask = fine_occ_mask & (sdf_fine > 0)
-        sdf_fine[fine_inner_mask] *= -1
+        sdf = udf - eps_fine if not last_level else udf - eps # [N, self.res_block+1, self.res_block+1, self.res_block+1]
+        inner_mask = occ_mask & (sdf > 0)
+        sdf[inner_mask] *= -1
+        kiui.lo(sdf, verbose=1)
+        print('eps = ', eps_fine if not last_level else eps)
 
         # convert to sparse voxels again
-        sdf_fine_000 = sdf_fine[:, :-1, :-1, :-1]
-        sdf_fine_001 = sdf_fine[:, :-1, :-1, 1:]
-        sdf_fine_010 = sdf_fine[:, :-1, 1:, :-1]
-        sdf_fine_011 = sdf_fine[:, :-1, 1:, 1:]
-        sdf_fine_100 = sdf_fine[:, 1:, :-1, :-1]
-        sdf_fine_101 = sdf_fine[:, 1:, :-1, 1:]
-        sdf_fine_110 = sdf_fine[:, 1:, 1:, :-1]
-        sdf_fine_111 = sdf_fine[:, 1:, 1:, 1:]
+        sdf_000 = sdf[:, :-1, :-1, :-1]
+        sdf_001 = sdf[:, :-1, :-1, 1:]
+        sdf_010 = sdf[:, :-1, 1:, :-1]
+        sdf_011 = sdf[:, :-1, 1:, 1:]
+        sdf_100 = sdf[:, 1:, :-1, :-1]
+        sdf_101 = sdf[:, 1:, :-1, 1:]
+        sdf_110 = sdf[:, 1:, 1:, :-1]
+        sdf_111 = sdf[:, 1:, 1:, 1:]
 
-        # this time we only keep the active voxels
-        fine_active_voxel_mask = torch.sign(sdf_fine_000) != torch.sign(sdf_fine_001)
-        fine_active_voxel_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_010)
-        fine_active_voxel_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_011)
-        fine_active_voxel_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_100)
-        fine_active_voxel_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_101)
-        fine_active_voxel_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_110)
-        fine_active_voxel_mask |= torch.sign(sdf_fine_000) != torch.sign(sdf_fine_111)
+        # keep the active voxels
+        active_voxel_mask = torch.sign(sdf_000) != torch.sign(sdf_001)
+        active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_010)
+        active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_011)
+        active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_100)
+        active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_101)
+        active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_110)
+        active_voxel_mask |= torch.sign(sdf_000) != torch.sign(sdf_111)
+        print('num active voxels: ', active_voxel_mask.sum().item())
 
-        coords_indices_local = torch.nonzero(fine_active_voxel_mask, as_tuple=True)
+        # if not the final level, add more voxels to make sure no finer voxels are left out
+        if not last_level:
+            border_voxel_mask = torch.minimum(udf[:, :-1, :-1, :-1], udf[:, :-1, :-1, 1:])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:, :-1, 1:, :-1])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:, :-1, 1:, 1:])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:, 1:, :-1, :-1])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:, 1:, :-1, 1:])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:, 1:, 1:, :-1])
+            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:, 1:, 1:, 1:])
+            border_voxel_mask = border_voxel_mask <= eps
+            active_voxel_mask |= border_voxel_mask
+            
+        coords_indices_local = torch.nonzero(active_voxel_mask, as_tuple=True)
         coords_local = torch.stack(coords_indices_local[1:], dim=-1)
         M = coords_local.shape[0]
 
         sdfs = torch.stack([
-            sdf_fine_000[coords_indices_local],
-            sdf_fine_100[coords_indices_local],
-            sdf_fine_110[coords_indices_local],
-            sdf_fine_010[coords_indices_local],
-            sdf_fine_001[coords_indices_local],
-            sdf_fine_101[coords_indices_local],
-            sdf_fine_111[coords_indices_local],
-            sdf_fine_011[coords_indices_local],
+            sdf_000[coords_indices_local],
+            sdf_100[coords_indices_local],
+            sdf_110[coords_indices_local],
+            sdf_010[coords_indices_local],
+            sdf_001[coords_indices_local],
+            sdf_101[coords_indices_local],
+            sdf_111[coords_indices_local],
+            sdf_011[coords_indices_local],
         ], dim=-1)
 
-        coords = res_block * coarse_coords[coords_indices_local[0]] + coords_local
+        coords = self.res_block * coarse_coords[coords_indices_local[0]] + coords_local
 
         out = {
             'coords': coords.int(),
@@ -465,6 +498,6 @@ class SparseVoxelExtractor:
         }
 
         if self.verbose:
-            print(f'Res: {res_fine}, time: {time.time() - t0:.2f}s, active cells: {M} / {(res_fine + 1) ** 3} = {M / (res_fine + 1) ** 3 * 100:.2f}%')
+            print(f'Fine Res: {res}, time: {time.time() - t0:.2f}s, active cells: {M} / {res ** 3} = {M / res ** 3 * 100:.2f}%')
 
         return out

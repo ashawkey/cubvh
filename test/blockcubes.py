@@ -63,7 +63,7 @@ def run(path):
             verbose=True,
         )
         mesh = trimesh.Trimesh(vertices, triangles)
-        mesh.export(f'{opt.workspace}/{name}.ply')
+        mesh.export(f'{opt.workspace}/{name}.glb')
 
 os.makedirs(opt.workspace, exist_ok=True)
 

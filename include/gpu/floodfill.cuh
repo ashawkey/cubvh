@@ -2,6 +2,7 @@
 #include <cuda_runtime.h>
 
 #include <cstdint>
+#include <cmath>
 
 #define THREADS_PER_BLOCK 256
 
@@ -41,44 +42,51 @@ __global__ void hookBatch(
     if (grid[idx] != 0) return;        // blocked voxel
 
     /* ---------- local coordinates inside the current volume -------------- */  
+    int batch_idx = idx / Nvol;        // which batch this voxel belongs to
     int local = idx % Nvol;            // 0 … Nvol-1  
     int x =  local % W;  
     int y = (local / W) % H;  
     int z =  local / (W * H);
+    
+    // Base index of current batch
+    int batch_base = batch_idx * Nvol;
 
     /* ----------------------- six-neighbour search with bounds checking ---- */  
     int best = labels[idx];
 
+    // X-direction neighbors (ensure we stay within the same batch)
     if (x > 0) { 
         int n = idx - 1; 
-        if (n >= 0 && n < Ntot && !grid[n] && labels[n] >= 0) 
+        if (n >= batch_base && n < batch_base + Nvol && !grid[n] && labels[n] >= 0) 
             best = min(best, labels[n]); 
     }  
     if (x < W - 1) { 
         int n = idx + 1; 
-        if (n >= 0 && n < Ntot && !grid[n] && labels[n] >= 0) 
+        if (n >= batch_base && n < batch_base + Nvol && !grid[n] && labels[n] >= 0) 
             best = min(best, labels[n]); 
     }
 
+    // Y-direction neighbors
     if (y > 0) { 
         int n = idx - W; 
-        if (n >= 0 && n < Ntot && !grid[n] && labels[n] >= 0) 
+        if (n >= batch_base && n < batch_base + Nvol && !grid[n] && labels[n] >= 0) 
             best = min(best, labels[n]); 
     }  
     if (y < H - 1) { 
         int n = idx + W; 
-        if (n >= 0 && n < Ntot && !grid[n] && labels[n] >= 0) 
+        if (n >= batch_base && n < batch_base + Nvol && !grid[n] && labels[n] >= 0) 
             best = min(best, labels[n]); 
     }
 
+    // Z-direction neighbors
     if (z > 0) { 
         int n = idx - W * H; 
-        if (n >= 0 && n < Ntot && !grid[n] && labels[n] >= 0) 
+        if (n >= batch_base && n < batch_base + Nvol && !grid[n] && labels[n] >= 0) 
             best = min(best, labels[n]); 
     }  
     if (z < D - 1) { 
         int n = idx + W * H; 
-        if (n >= 0 && n < Ntot && !grid[n] && labels[n] >= 0) 
+        if (n >= batch_base && n < batch_base + Nvol && !grid[n] && labels[n] >= 0) 
             best = min(best, labels[n]); 
     }
 
@@ -89,7 +97,8 @@ __global__ void hookBatch(
         int old_val = atomicCAS(&labels[idx], current_label, best);
         if (old_val == current_label) {
             // Successfully updated, mark as changed
-            atomicOr(changed, 1);
+            // Use atomic exchange instead of OR to reduce contention
+            atomicExch(changed, 1);
         }
     }  
 }
@@ -186,9 +195,14 @@ void _floodfill_batch(
     }
 
     /* -------------------- iterated hook / compress with bounds ----------- */  
-    const int MAX_ITERATIONS = 3 * max(H, max(W, D));  // Conservative upper bound
+    // Improved iteration limit: account for diagonal propagation distance and batch size
+    const int diagonal_dist = (int)ceil(sqrt((double)(H*H + W*W + D*D)));
+    // For small grids (like 3x3x3 batches), use a smaller limit
+    const int base_limit = (H <= 4 && W <= 4 && D <= 4) ? 20 : diagonal_dist + 50;
+    const int MAX_ITERATIONS = min(base_limit, 10 * max(H, max(W, D)));  // More realistic upper bound
     int h_changed = 1;
     int iteration = 0;
+    int no_change_count = 0;  // Track consecutive iterations with no changes
     
     while (h_changed && iteration < MAX_ITERATIONS) {  
         cudaMemset(d_changed, 0, sizeof(int));
@@ -201,8 +215,8 @@ void _floodfill_batch(
                 H, W, D, Nvol, Ntot);  
         }
 
-        /* compress */  
-        {  
+        /* compress - only run every few iterations to reduce overhead */  
+        if (iteration % 5 == 4 || iteration < 10) {  // Compress more frequently early on
             int blocks = divUp(Ntot, THREADS_PER_BLOCK);  
             compress<<<blocks, THREADS_PER_BLOCK>>>(d_labels, Ntot);  
         }
@@ -219,10 +233,21 @@ void _floodfill_batch(
         cudaMemcpy(&h_changed, d_changed, sizeof(int), cudaMemcpyDeviceToHost);
         iteration++;
         
-        // Progress reporting for very long runs
-        if (iteration % 100 == 0) {
-            printf("Flood fill iteration %d/%d (may indicate convergence issues)\n", iteration, MAX_ITERATIONS);
+        // Early termination: if no changes for several iterations, we've likely converged
+        if (h_changed == 0) {
+            no_change_count++;
+            if (no_change_count >= 3) {  // No changes for 3 consecutive iterations
+                break;  // Early convergence detected
+            }
+        } else {
+            no_change_count = 0;
         }
+        
+        // Progress reporting for very long runs
+        // if (iteration % 50 == 0) {  // Report more frequently
+        //     printf("Flood fill iteration %d/%d (grid: %dx%dx%d, batches: %d)\n", 
+        //            iteration, MAX_ITERATIONS, H, W, D, B);
+        // }
     }
     
     if (iteration >= MAX_ITERATIONS) {
