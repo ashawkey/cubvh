@@ -295,13 +295,39 @@ class SparseVoxelExtractor:
         udf, _, _ = self.bvh.unsigned_distance(self.grid_points.view(-1, 3), return_uvw=False)
         udf = udf.view(res + 1, res + 1, res + 1).contiguous()
 
-        # mark occupied voxels
+        # mark occupied voxels at coarse band-width
         occ = udf < eps_fine if not last_level else udf < eps
 
         # floodfill
         floodfill_mask = cubvh.floodfill(occ)
         empty_label = floodfill_mask[0, 0, 0].item()
         empty_mask = (floodfill_mask == empty_label)
+        print('empty mask: ', empty_mask.sum().item())
+
+        # get the fine empty_mask (at fine band-width) by contracting the outer band.
+        # some negative (inner) mask will be corrected as positive iff. their udf > eps_fine and they have a positive neighbor.
+        # delta_mask = (udf > eps_fine) & (udf < eps)
+        # print('delta mask: ', delta_mask.sum().item())
+        # # empty_mask |= delta_mask
+        # # loop until no more empty mask is added
+        # num_empty = empty_mask.sum().item()
+        # while True:
+        #     has_empty_neighbor_mask = torch.zeros_like(delta_mask, dtype=torch.bool)
+        #     has_empty_neighbor_mask[:, :, 1:] |= empty_mask[:, :, :-1]
+        #     has_empty_neighbor_mask[:, :, :-1] |= empty_mask[:, :, 1:]
+        #     has_empty_neighbor_mask[:, 1:, :] |= empty_mask[:, :-1, :]
+        #     has_empty_neighbor_mask[:, :-1, :] |= empty_mask[:, 1:, :]
+        #     has_empty_neighbor_mask[1:, :, :] |= empty_mask[:-1, :, :]
+        #     has_empty_neighbor_mask[:-1, :, :] |= empty_mask[1:, :, :]
+        #     corrected_empty_mask = delta_mask & has_empty_neighbor_mask
+        #     empty_mask |= corrected_empty_mask
+        #     new_num_empty = empty_mask.sum().item()
+        #     print('corrected empty mask: ', new_num_empty)
+        #     if new_num_empty == num_empty:
+        #         break
+        #     num_empty = new_num_empty
+
+        # invert to get the occ_mask
         occ_mask = ~empty_mask
         occ_ratio = occ_mask.sum().item() / (res + 1) ** 3
 
@@ -331,16 +357,16 @@ class SparseVoxelExtractor:
         print('coarse num active voxels: ', active_voxel_mask.sum().item())
 
         # add more voxels to make sure no fine voxels are left out
-        if not last_level:
-            border_voxel_mask = torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
-            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, :-1])
-            border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, 1:])
-            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, :-1])
-            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, 1:])
-            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, :-1])
-            border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, 1:])
-            border_voxel_mask = border_voxel_mask <= eps
-            active_voxel_mask |= border_voxel_mask
+        # if not last_level:
+        #     border_voxel_mask = torch.minimum(udf[:-1, :-1, :-1], udf[:-1, :-1, 1:])
+        #     border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, :-1])
+        #     border_voxel_mask = torch.minimum(border_voxel_mask, udf[:-1, 1:, 1:])
+        #     border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, :-1])
+        #     border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, :-1, 1:])
+        #     border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, :-1])
+        #     border_voxel_mask = torch.minimum(border_voxel_mask, udf[1:, 1:, 1:])
+        #     border_voxel_mask = border_voxel_mask <= eps
+        #     active_voxel_mask |= border_voxel_mask
 
         coords_indices = torch.nonzero(active_voxel_mask, as_tuple=True)
         coords = torch.stack(coords_indices, dim=-1)  # [N,3]
@@ -413,6 +439,10 @@ class SparseVoxelExtractor:
         udf = udf.view(N, self.res_block + 1, self.res_block + 1, self.res_block + 1).contiguous()
         occ = udf < eps_fine if not last_level else udf < eps
         ff_mask = cubvh.floodfill(occ) # [N, self.res_block + 1, self.res_block + 1, self.res_block + 1]
+
+        _num = (occ.sum(dim=(1, 2, 3)) > 0).sum().item()
+        print('num occupied coarse voxels: ', _num, "all: ", N)
+        # assert _num == N, 'all coarse voxels should be occupied'
 
         # we need to find out the empty label for each batch (take care of ALL corners with positive sdf!)
         # get the corners of the ff_mask
