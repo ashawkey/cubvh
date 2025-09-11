@@ -7,5 +7,5 @@ build/
 eigen*/
 output/
 output*/
-data/
+data
 temp_*

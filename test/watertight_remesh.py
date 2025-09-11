@@ -7,6 +7,7 @@ import mcubes
 import trimesh
 import argparse
 import numpy as np
+from skimage.morphology import flood
 
 import torch
 import cubvh
@@ -18,8 +19,9 @@ Extract watertight mesh from a arbitrary mesh by UDF expansion and floodfill.
 """
 parser = argparse.ArgumentParser()
 parser.add_argument('test_path', type=str)
-parser.add_argument('--res', type=int, default=512)
+parser.add_argument('--res', type=int, default=1024)
 parser.add_argument('--workspace', type=str, default='output')
+parser.add_argument('--ff', type=str, choices=['cubvh', 'skimage'], default='cubvh')
 parser.add_argument('--mc', type=str, choices=['pymcubes', 'disomc', 'disodmc', 'spcumc', 'spmc'], default='pymcubes') # use sparse CUDA marching cubes, usually faster.
 parser.add_argument('--target_faces', type=int, default=1000000)
 opt = parser.parse_args()
@@ -71,13 +73,21 @@ def run(path):
     print(f'UDF time: {time.time() - t0:.4f}s')
 
     ### floodfill
-    t0 = time.time()
     udf = udf.view(opt.res, opt.res, opt.res).contiguous()
     occ = udf < eps
-    floodfill_mask = cubvh.floodfill(occ)
-    empty_label = floodfill_mask[0, 0, 0].item()
-    empty_mask = (floodfill_mask == empty_label)
-    print(f'Floodfill time: {time.time() - t0:.4f}s')
+    
+    if opt.ff == 'cubvh':
+        t0 = time.time()
+        floodfill_mask = cubvh.floodfill(occ)
+        print(f'Floodfill (cubvh) time: {time.time() - t0:.4f}s')
+        empty_label = floodfill_mask[0, 0, 0].item()
+        empty_mask = (floodfill_mask == empty_label)
+    elif opt.ff == 'skimage':
+        occ_np = occ.cpu().numpy()
+        t0 = time.time()
+        empty_mask = flood(occ_np, (0, 0, 0), connectivity=1)
+        print(f'Floodfill (skimage) time: {time.time() - t0:.4f}s')
+        empty_mask = torch.from_numpy(empty_mask).to(device)
 
     ### binary occupancy
     occ_mask = ~empty_mask
@@ -138,6 +148,7 @@ def run(path):
         print(f'Sparse MC time: {time.time() - t0:.4f}s, vertices: {len(watertight_mesh.vertices)}, triangles: {len(watertight_mesh.faces)}')
     elif opt.mc == 'disomc' or opt.mc == 'disodmc':
         import diso
+        t0 = time.time()
         if opt.mc == 'disomc':
             diffmc = diso.DiffMC(dtype=torch.float32).cuda()
             vertices, triangles = diffmc(sdf, normalize=True)
@@ -149,7 +160,7 @@ def run(path):
         vertices = vertices.astype(np.float32)
         triangles = triangles.astype(np.int32)
         watertight_mesh = trimesh.Trimesh(vertices, triangles)
-        print(f'DiffMC time: {time.time() - t0:.4f}s, vertices: {len(watertight_mesh.vertices)}, triangles: {len(watertight_mesh.faces)}')
+        print(f'Diso MC time: {time.time() - t0:.4f}s, vertices: {len(watertight_mesh.vertices)}, triangles: {len(watertight_mesh.faces)}')
     else:
         ### CPU dense marching cubes
         t0 = time.time()
@@ -158,7 +169,7 @@ def run(path):
         vertices = vertices.astype(np.float32)
         triangles = triangles.astype(np.int32)
         watertight_mesh = trimesh.Trimesh(vertices, triangles)
-        print(f'MC time: {time.time() - t0:.4f}s, vertices: {len(watertight_mesh.vertices)}, triangles: {len(watertight_mesh.faces)}')
+        print(f'CPU MC time: {time.time() - t0:.4f}s, vertices: {len(watertight_mesh.vertices)}, triangles: {len(watertight_mesh.faces)}')
     
     ### decimation
     if opt.target_faces > 0:

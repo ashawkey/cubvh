@@ -35,7 +35,7 @@ base_nvcc_flags = [
 	"--extended-lambda",
 	"--expt-relaxed-constexpr",
 	# The following definitions must be undefined
-	# since TCNN requires half-precision operation.
+	# since we need half-precision operation.
 	"-U__CUDA_NO_HALF_OPERATORS__",
 	"-U__CUDA_NO_HALF_CONVERSIONS__",
 	"-U__CUDA_NO_HALF2_OPERATORS__",

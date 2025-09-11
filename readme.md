@@ -4,13 +4,15 @@ A CUDA Mesh BVH acceleration toolkit.
 
 ### Install
 
+Make sure `torch` and CUDA are installed first.
+
 ```bash
-pip install git+https://github.com/ashawkey/cubvh
+pip install git+https://github.com/ashawkey/cubvh --no-build-isolation
 
 # or locally
 git clone --recursive https://github.com/ashawkey/cubvh
 cd cubvh
-pip install .
+pip install . --no-build-isolation
 ```
 It will take several minutes to build the CUDA dependency.
 
