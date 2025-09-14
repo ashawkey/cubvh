@@ -22,7 +22,7 @@ parser.add_argument('test_path', type=str)
 parser.add_argument('--res', type=int, default=1024)
 parser.add_argument('--workspace', type=str, default='output')
 parser.add_argument('--ff', type=str, choices=['cubvh', 'skimage'], default='cubvh')
-parser.add_argument('--mc', type=str, choices=['pymcubes', 'disomc', 'disodmc', 'spcumc', 'spmc'], default='pymcubes') # use sparse CUDA marching cubes, usually faster.
+parser.add_argument('--mc', type=str, choices=['pymcubes', 'disomc', 'disodmc', 'spcumc', 'spmc'], default='spcumc') # use sparse CUDA marching cubes, usually faster.
 parser.add_argument('--target_faces', type=int, default=1000000)
 opt = parser.parse_args()
 
