@@ -61,6 +61,17 @@ m.def("sparse_marching_cubes_cpu", &sparse_marching_cubes_cpu,
     py::arg("ensure_consistency") = false
 );
 
+// CPU decimator
+m.def("decimate", &decimate,
+    py::arg("vertices"), py::arg("faces"),
+    py::arg("target_vertices")
+);
+
+m.def("parallel_decimate", &parallel_decimate,
+    py::arg("vertices"), py::arg("faces"),
+    py::arg("target_vertices")
+);
+
 // CPU Hash Table bindings
 py::class_<HashTable>(m, "HashTable")
     .def(py::init<>())

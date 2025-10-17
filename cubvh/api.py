@@ -260,3 +260,35 @@ def sparse_marching_cubes_cpu(coords, corners, iso: float, ensure_consistency: b
     assert corners.ndim == 2 and corners.shape[1] == 8, "corners must be [N,8]"
     v, f = _backend.sparse_marching_cubes_cpu(coords, corners, float(iso), bool(ensure_consistency))
     return np.asarray(v, dtype=np.float32), np.asarray(f, dtype=np.int32)
+
+
+def decimate(vertices: np.ndarray, faces: np.ndarray, target_vertices: int):
+    """CPU quadric-error simplification to target number of vertices.
+    Args:
+        vertices: np.ndarray float32 or float64 [N,3]
+        faces: np.ndarray int32 [M,3]
+        target_vertices: desired vertex count after decimation
+    Returns:
+        (vertices, faces): simplified mesh
+    """
+    assert vertices.ndim == 2 and vertices.shape[1] == 3
+    assert faces.ndim == 2 and faces.shape[1] == 3
+    faces = faces.astype(np.int32)
+    v, f = _backend.decimate(vertices, faces, int(target_vertices))
+    return v, f
+
+
+def parallel_decimate(vertices: np.ndarray, faces: np.ndarray, target_vertices: int):
+    """CPU batch-parallel decimation to target number of vertices.
+    Args:
+        vertices: np.ndarray float32 or float64 [N,3]
+        faces: np.ndarray int32 [M,3]
+        target_vertices: desired vertex count after decimation
+    Returns:
+        (vertices, faces): simplified mesh
+    """
+    assert vertices.ndim == 2 and vertices.shape[1] == 3
+    assert faces.ndim == 2 and faces.shape[1] == 3
+    faces = faces.astype(np.int32)
+    v, f = _backend.parallel_decimate(vertices, faces, int(target_vertices))
+    return v, f

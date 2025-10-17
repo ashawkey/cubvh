@@ -7,4 +7,6 @@ from .api import (
 	floodfill,
 	fill_holes,
 	merge_vertices,
+    decimate,
+    parallel_decimate,
 )

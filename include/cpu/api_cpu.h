@@ -7,6 +7,8 @@
 // CPU sparse marching cubes
 #include <cpu/hashtable.h>
 #include <cpu/spmc.h>
+// CPU mesh decimator
+#include <cpu/decimation.h>
 
 #include <vector>
 #include <cstring>
@@ -170,6 +172,103 @@ static std::pair<py::array_t<float>, py::array_t<int>> sparse_marching_cubes_cpu
     }
 
     return {v_out, f_out};
+}
+
+// CPU decimator bindings
+template <typename T>
+static cubvh::cpu::qd_cpu::MeshT<T> _mesh_from_numpy_typed(
+    py::array_t<T, py::array::c_style | py::array::forcecast> vertices,
+    py::array_t<int, py::array::c_style | py::array::forcecast> faces)
+{
+    if (vertices.ndim() != 2 || vertices.shape(1) != 3)
+        throw std::runtime_error("vertices must be (N,3) array");
+    if (faces.ndim() != 2 || faces.shape(1) != 3)
+        throw std::runtime_error("faces must be (M,3) int32 array");
+
+    cubvh::cpu::qd_cpu::MeshT<T> m;
+    m.vertices.reserve(vertices.shape(0));
+    auto vbuf = vertices.template unchecked<2>();
+    for (ssize_t i = 0; i < vertices.shape(0); ++i) {
+        m.vertices.emplace_back(vbuf(i,0), vbuf(i,1), vbuf(i,2));
+    }
+    m.faces.reserve(faces.shape(0));
+    auto fbuf = faces.template unchecked<2>();
+    for (ssize_t i = 0; i < faces.shape(0); ++i) {
+        m.faces.push_back({ fbuf(i,0), fbuf(i,1), fbuf(i,2) });
+    }
+    return m;
+}
+
+template <typename T>
+static std::pair<py::array_t<T>, py::array_t<int>> _mesh_to_numpy_typed(const cubvh::cpu::qd_cpu::MeshT<T>& m)
+{
+    py::array_t<T> V({ (ssize_t)m.vertices.size(), (ssize_t)3 });
+    py::array_t<int> F({ (ssize_t)m.faces.size(), (ssize_t)3 });
+    auto vbuf = V.template mutable_unchecked<2>();
+    for (ssize_t i = 0; i < (ssize_t)m.vertices.size(); ++i) {
+        vbuf(i,0) = m.vertices[i].x;
+        vbuf(i,1) = m.vertices[i].y;
+        vbuf(i,2) = m.vertices[i].z;
+    }
+    auto fbuf = F.template mutable_unchecked<2>();
+    for (ssize_t i = 0; i < (ssize_t)m.faces.size(); ++i) {
+        fbuf(i,0) = m.faces[i][0];
+        fbuf(i,1) = m.faces[i][1];
+        fbuf(i,2) = m.faces[i][2];
+    }
+    return { V, F };
+}
+
+static py::tuple decimate(py::array vertices,
+                          py::array faces,
+                          int target_vertices)
+{
+    py::dtype dt = vertices.dtype();
+    if (dt.is(py::dtype::of<float>())){
+        auto v = vertices.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+        auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
+        auto mesh = _mesh_from_numpy_typed<float>(v, f);
+        cubvh::cpu::qd_cpu::DecimatorT<float> dec(mesh);
+        dec.decimate(target_vertices);
+        auto out = _mesh_to_numpy_typed<float>(dec.mesh());
+        return py::make_tuple(out.first, out.second);
+    } else if (dt.is(py::dtype::of<double>())){
+        auto v = vertices.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
+        auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
+        auto mesh = _mesh_from_numpy_typed<double>(v, f);
+        cubvh::cpu::qd_cpu::DecimatorT<double> dec(mesh);
+        dec.decimate(target_vertices);
+        auto out = _mesh_to_numpy_typed<double>(dec.mesh());
+        return py::make_tuple(out.first, out.second);
+    } else {
+        throw std::runtime_error("vertices must be float32 or float64 array");
+    }
+}
+
+static py::tuple parallel_decimate(py::array vertices,
+                                   py::array faces,
+                                   int target_vertices)
+{
+    py::dtype dt = vertices.dtype();
+    if (dt.is(py::dtype::of<float>())){
+        auto v = vertices.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
+        auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
+        auto mesh = _mesh_from_numpy_typed<float>(v, f);
+        cubvh::cpu::qd_cpu::DecimatorT<float> dec(mesh);
+        dec.parallelDecimate(target_vertices);
+        auto out = _mesh_to_numpy_typed<float>(dec.mesh());
+        return py::make_tuple(out.first, out.second);
+    } else if (dt.is(py::dtype::of<double>())){
+        auto v = vertices.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
+        auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
+        auto mesh = _mesh_from_numpy_typed<double>(v, f);
+        cubvh::cpu::qd_cpu::DecimatorT<double> dec(mesh);
+        dec.parallelDecimate(target_vertices);
+        auto out = _mesh_to_numpy_typed<double>(dec.mesh());
+        return py::make_tuple(out.first, out.second);
+    } else {
+        throw std::runtime_error("vertices must be float32 or float64 array");
+    }
 }
 
 // CPU Hash Table bindings
