@@ -176,7 +176,7 @@ static std::pair<py::array_t<float>, py::array_t<int>> sparse_marching_cubes_cpu
 
 // CPU decimator bindings
 template <typename T>
-static cubvh::cpu::qd_cpu::MeshT<T> _mesh_from_numpy_typed(
+static cubvh::cpu::qd::MeshT<T> _mesh_from_numpy_typed(
     py::array_t<T, py::array::c_style | py::array::forcecast> vertices,
     py::array_t<int, py::array::c_style | py::array::forcecast> faces)
 {
@@ -185,7 +185,7 @@ static cubvh::cpu::qd_cpu::MeshT<T> _mesh_from_numpy_typed(
     if (faces.ndim() != 2 || faces.shape(1) != 3)
         throw std::runtime_error("faces must be (M,3) int32 array");
 
-    cubvh::cpu::qd_cpu::MeshT<T> m;
+    cubvh::cpu::qd::MeshT<T> m;
     m.vertices.reserve(vertices.shape(0));
     auto vbuf = vertices.template unchecked<2>();
     for (ssize_t i = 0; i < vertices.shape(0); ++i) {
@@ -200,7 +200,7 @@ static cubvh::cpu::qd_cpu::MeshT<T> _mesh_from_numpy_typed(
 }
 
 template <typename T>
-static std::pair<py::array_t<T>, py::array_t<int>> _mesh_to_numpy_typed(const cubvh::cpu::qd_cpu::MeshT<T>& m)
+static std::pair<py::array_t<T>, py::array_t<int>> _mesh_to_numpy_typed(const cubvh::cpu::qd::MeshT<T>& m)
 {
     py::array_t<T> V({ (ssize_t)m.vertices.size(), (ssize_t)3 });
     py::array_t<int> F({ (ssize_t)m.faces.size(), (ssize_t)3 });
@@ -228,7 +228,7 @@ static py::tuple decimate(py::array vertices,
         auto v = vertices.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
         auto mesh = _mesh_from_numpy_typed<float>(v, f);
-        cubvh::cpu::qd_cpu::DecimatorT<float> dec(mesh);
+        cubvh::cpu::qd::DecimatorT<float> dec(mesh);
         dec.decimate(target_vertices);
         auto out = _mesh_to_numpy_typed<float>(dec.mesh());
         return py::make_tuple(out.first, out.second);
@@ -236,7 +236,7 @@ static py::tuple decimate(py::array vertices,
         auto v = vertices.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
         auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
         auto mesh = _mesh_from_numpy_typed<double>(v, f);
-        cubvh::cpu::qd_cpu::DecimatorT<double> dec(mesh);
+        cubvh::cpu::qd::DecimatorT<double> dec(mesh);
         dec.decimate(target_vertices);
         auto out = _mesh_to_numpy_typed<double>(dec.mesh());
         return py::make_tuple(out.first, out.second);
@@ -254,7 +254,7 @@ static py::tuple parallel_decimate(py::array vertices,
         auto v = vertices.cast<py::array_t<float, py::array::c_style | py::array::forcecast>>();
         auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
         auto mesh = _mesh_from_numpy_typed<float>(v, f);
-        cubvh::cpu::qd_cpu::DecimatorT<float> dec(mesh);
+        cubvh::cpu::qd::DecimatorT<float> dec(mesh);
         dec.parallelDecimate(target_vertices);
         auto out = _mesh_to_numpy_typed<float>(dec.mesh());
         return py::make_tuple(out.first, out.second);
@@ -262,7 +262,7 @@ static py::tuple parallel_decimate(py::array vertices,
         auto v = vertices.cast<py::array_t<double, py::array::c_style | py::array::forcecast>>();
         auto f = faces.cast<py::array_t<int, py::array::c_style | py::array::forcecast>>();
         auto mesh = _mesh_from_numpy_typed<double>(v, f);
-        cubvh::cpu::qd_cpu::DecimatorT<double> dec(mesh);
+        cubvh::cpu::qd::DecimatorT<double> dec(mesh);
         dec.parallelDecimate(target_vertices);
         auto out = _mesh_to_numpy_typed<double>(dec.mesh());
         return py::make_tuple(out.first, out.second);

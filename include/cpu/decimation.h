@@ -15,9 +15,7 @@
 
 namespace cubvh {
 namespace cpu {
-
-// Port of decimator/include/quadric_decimator.hpp under an internal namespace to avoid symbol collision.
-namespace qd_cpu {
+namespace qd {
 
 // Basic 3D vector (templated)
 template <typename T>
@@ -241,8 +239,7 @@ public:
 	explicit DecimatorT(MeshT<T> mesh) : m(mesh) {}
 
 	// Reduce mesh to target vertex count (or until no improvement).
-	// Optionally limit the number of collapses for runtime budgeting.
-	void decimate(int target_vertices, int max_collapses = -1){
+	void decimate(int target_vertices){
 		target_vertices = std::max(0, target_vertices);
 		// Build adjacency and initial structures
 		buildAdjacency();
@@ -258,8 +255,6 @@ public:
 				pq.emplace(e.cost, kv.first);
 		}
 		// Greedy collapses until target or no candidates
-		int safety = 0;
-		int collapses_done = 0;
 		while ((int)activeVertexCount() > target_vertices && !pq.empty()) {
 			auto [cost, key] = pq.top(); pq.pop();
 			auto it = edges.find(key);
@@ -279,9 +274,6 @@ public:
 			e.valid = false;
 			// Recompute QEM for affected vertices and update incident edges
 			updateAroundVertex(e.v0, pq);
-			if (max_collapses > 0 && ++collapses_done >= max_collapses) break;
-			// Safety bailout
-			if (++safety > 1000000) break;
 		}
 		compact();
 	}
@@ -699,6 +691,6 @@ using Quadric = Quadricd;
 using Mesh = Meshd;
 using Decimator = Decimatord;
 
-} // namespace qd_cpu
+} // namespace qd
 } // namespace cpu
 } // namespace cubvh
