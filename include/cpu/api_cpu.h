@@ -188,12 +188,12 @@ static cubvh::cpu::qd::MeshT<T> _mesh_from_numpy_typed(
     cubvh::cpu::qd::MeshT<T> m;
     m.vertices.reserve(vertices.shape(0));
     auto vbuf = vertices.template unchecked<2>();
-    for (ssize_t i = 0; i < vertices.shape(0); ++i) {
+    for (py::ssize_t i = 0; i < vertices.shape(0); ++i) {
         m.vertices.emplace_back(vbuf(i,0), vbuf(i,1), vbuf(i,2));
     }
     m.faces.reserve(faces.shape(0));
     auto fbuf = faces.template unchecked<2>();
-    for (ssize_t i = 0; i < faces.shape(0); ++i) {
+    for (py::ssize_t i = 0; i < faces.shape(0); ++i) {
         m.faces.push_back({ fbuf(i,0), fbuf(i,1), fbuf(i,2) });
     }
     return m;
@@ -202,16 +202,16 @@ static cubvh::cpu::qd::MeshT<T> _mesh_from_numpy_typed(
 template <typename T>
 static std::pair<py::array_t<T>, py::array_t<int>> _mesh_to_numpy_typed(const cubvh::cpu::qd::MeshT<T>& m)
 {
-    py::array_t<T> V({ (ssize_t)m.vertices.size(), (ssize_t)3 });
-    py::array_t<int> F({ (ssize_t)m.faces.size(), (ssize_t)3 });
+    py::array_t<T> V({ (py::ssize_t)m.vertices.size(), (py::ssize_t)3 });
+    py::array_t<int> F({ (py::ssize_t)m.faces.size(), (py::ssize_t)3 });
     auto vbuf = V.template mutable_unchecked<2>();
-    for (ssize_t i = 0; i < (ssize_t)m.vertices.size(); ++i) {
+    for (py::ssize_t i = 0; i < (py::ssize_t)m.vertices.size(); ++i) {
         vbuf(i,0) = m.vertices[i].x;
         vbuf(i,1) = m.vertices[i].y;
         vbuf(i,2) = m.vertices[i].z;
     }
     auto fbuf = F.template mutable_unchecked<2>();
-    for (ssize_t i = 0; i < (ssize_t)m.faces.size(); ++i) {
+    for (py::ssize_t i = 0; i < (py::ssize_t)m.faces.size(); ++i) {
         fbuf(i,0) = m.faces[i][0];
         fbuf(i,1) = m.faces[i][1];
         fbuf(i,2) = m.faces[i][2];
