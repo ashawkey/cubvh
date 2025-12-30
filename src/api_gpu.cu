@@ -35,7 +35,8 @@ public:
 
         triangle_bvh->build(triangles_cpu, 8);
 
-        triangles_gpu.resize_and_copy_from_host(triangles_cpu);
+        // Removed for it is now done lazily
+        // triangles_gpu.resize_and_copy_from_host(triangles_cpu);
 
         // TODO: need OPTIX
         // triangle_bvh->build_optix(triangles_gpu, m_inference_stream);
@@ -56,7 +57,8 @@ public:
         const size_t n_triangles = triangles_tensor.size(0);
         triangles_cpu.resize(n_triangles);
         std::memcpy(triangles_cpu.data(), triangles_tensor.data_ptr(), n_triangles * sizeof(Triangle));
-        triangles_gpu.resize_and_copy_from_host(triangles_cpu);
+        // Removed for it is now done lazily
+        // triangles_gpu.resize_and_copy_from_host(triangles_cpu);
 
         // load triangle_bvh
         if (!triangle_bvh) {
@@ -70,6 +72,11 @@ public:
         const uint32_t n_elements = rays_o.size(0);
         cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
+        // Lazy init gpu memory
+        if (triangles_gpu.data() == nullptr) {
+            triangles_gpu.resize_and_copy_from_host(triangles_cpu);
+        }
+
         triangle_bvh->ray_trace_gpu(n_elements, rays_o.data_ptr<float>(), rays_d.data_ptr<float>(), positions.data_ptr<float>(), face_id.data_ptr<int64_t>(), depth.data_ptr<float>(), triangles_gpu.data(), stream);
     }
 
@@ -77,6 +84,11 @@ public:
 
         const uint32_t n_elements = positions.size(0);
         cudaStream_t stream = at::cuda::getCurrentCUDAStream();
+
+        // Lazy init gpu memory
+        if (triangles_gpu.data() == nullptr) {
+            triangles_gpu.resize_and_copy_from_host(triangles_cpu);
+        }
 
         triangle_bvh->unsigned_distance_gpu(n_elements, positions.data_ptr<float>(), distances.data_ptr<float>(), face_id.data_ptr<int64_t>(), uvw.has_value() ? uvw.value().data_ptr<float>() : nullptr, triangles_gpu.data(), stream);
 
@@ -87,13 +99,18 @@ public:
         const uint32_t n_elements = positions.size(0);
         cudaStream_t stream = at::cuda::getCurrentCUDAStream();
 
+        // Lazy init gpu memory
+        if (triangles_gpu.data() == nullptr) {
+            triangles_gpu.resize_and_copy_from_host(triangles_cpu);
+        }
+
         triangle_bvh->signed_distance_gpu(n_elements, mode, positions.data_ptr<float>(), distances.data_ptr<float>(), face_id.data_ptr<int64_t>(), uvw.has_value() ? uvw.value().data_ptr<float>() : nullptr, triangles_gpu.data(), stream);
     }
 
     std::unordered_map<std::string, at::Tensor> state_dict() const {
         // get state_dict from triangle_bvh
         auto state_dict = triangle_bvh->state_dict();
-        // add triangles_gpu to state_dict
+        // add triangles_cpu to state_dict
         auto triangles_tensor = torch::from_blob(
             (void*)triangles_cpu.data(),
             {static_cast<int64_t>(triangles_cpu.size()), static_cast<int64_t>(sizeof(Triangle) / sizeof(int32_t))},

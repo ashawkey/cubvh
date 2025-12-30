@@ -432,6 +432,11 @@ public:
         const Vector3f* positions_vec = (const Vector3f*)positions;
         Vector3f* uvw_vec = (Vector3f*)uvw;
 
+        // lazy init gpu memory
+        if (m_nodes_gpu.data() == nullptr) {
+            m_nodes_gpu.resize_and_copy_from_host(m_nodes);
+        }
+
         if (mode == 0) {
             // watertight
             linear_kernel(signed_distance_watertight_kernel, 0u, stream,
@@ -465,6 +470,11 @@ public:
         const Vector3f* positions_vec = (const Vector3f*)positions;
         Vector3f* uvw_vec = (Vector3f*)uvw;
 
+        // lazy init gpu memory
+        if (m_nodes_gpu.data() == nullptr) {
+            m_nodes_gpu.resize_and_copy_from_host(m_nodes);
+        }
+
         linear_kernel(unsigned_distance_kernel, 0u, stream,
             n_elements,
             positions_vec,
@@ -483,6 +493,11 @@ public:
         const Vector3f* rays_o_vec = (const Vector3f*)rays_o;
         const Vector3f* rays_d_vec = (const Vector3f*)rays_d;
         Vector3f* positions_vec = (Vector3f*)positions;
+
+        // lazy init gpu memory
+        if (m_nodes_gpu.data() == nullptr) {
+            m_nodes_gpu.resize_and_copy_from_host(m_nodes);
+        }
         
         linear_kernel(raytrace_kernel, 0u, stream,
             n_elements,
@@ -598,7 +613,8 @@ public:
             thread_bvh(0, -1);
         }
 
-        m_nodes_gpu.resize_and_copy_from_host(m_nodes);
+        // Removed for it is now done lazily
+        // m_nodes_gpu.resize_and_copy_from_host(m_nodes);
 
         // std::cout << "[INFO] Built TriangleBvh: nodes=" << m_nodes.size() << std::endl;
     }
