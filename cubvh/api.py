@@ -22,6 +22,18 @@ class cuBVH():
         
         # implementation
         self.impl = _backend.create_cuBVH(vertices, triangles)
+        
+    def state_dict(self):
+        # return: dict of str -> torch.Tensor
+        return self.impl.state_dict()
+    
+    @staticmethod
+    def from_state_dict(state_dict):
+        # state_dict: dict of str -> torch.Tensor
+        impl = _backend.from_state_dict(state_dict)
+        obj = cuBVH.__new__(cuBVH)
+        obj.impl = impl
+        return obj
 
     def ray_trace(self, rays_o, rays_d):
         # rays_o: torch.Tensor, float, [N, 3]

@@ -7,6 +7,8 @@
 
 #include <memory>
 
+#include <torch/torch.h>
+
 namespace cubvh {
 
 struct TriangleBvhNode {
@@ -79,6 +81,32 @@ public:
         return m_nodes_gpu.data();
     }
 
+    std::unordered_map<std::string, at::Tensor> state_dict() const {
+        std::unordered_map<std::string, at::Tensor> state;
+        // Create a tensor from the CPU data
+        auto nodes_tensor = at::from_blob(
+            (void*)m_nodes.data(),
+            {static_cast<int64_t>(m_nodes.size()), static_cast<int64_t>(sizeof(TriangleBvhNode) / sizeof(int32_t))},
+            at::TensorOptions().dtype(at::kInt).device(at::kCPU)
+        ).clone();
+        state["nodes"] = nodes_tensor;
+        return state;
+    }
+
+    void load_state_dict(const std::unordered_map<std::string, at::Tensor>& state) {
+        // If nodes exist in the state, load them
+        auto it = state.find("nodes");
+        if (it == state.end()) {
+            throw std::runtime_error("State dict does not contain 'nodes'");
+        }
+        const at::Tensor& nodes_tensor = it->second;
+        // Resize m_nodes to match the size of the tensor
+        m_nodes.resize(nodes_tensor.size(0));
+        // Copy data from the tensor to m_nodes
+        std::memcpy(m_nodes.data(), nodes_tensor.data_ptr(), m_nodes.size() * sizeof(TriangleBvhNode));
+        // Also update the GPU memory
+        m_nodes_gpu.resize_and_copy_from_host(m_nodes);
+    }
 };
 
 }
