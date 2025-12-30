@@ -42,6 +42,29 @@ public:
 
     }
 
+    // accept state_dict to init
+    cuBVHImpl(const std::unordered_map<std::string, at::Tensor>& state_dict) : cuBVH() {
+        // load triangles
+        auto it = state_dict.find("triangles");
+        if (it == state_dict.end()) {
+            throw std::runtime_error("state_dict missing 'triangles' tensor");
+        }
+
+        at::Tensor triangles_tensor = it->second;
+        TORCH_CHECK(triangles_tensor.is_cpu(), "triangles must be on CPU");
+
+        const size_t n_triangles = triangles_tensor.size(0);
+        triangles_cpu.resize(n_triangles);
+        std::memcpy(triangles_cpu.data(), triangles_tensor.data_ptr(), n_triangles * sizeof(Triangle));
+        triangles_gpu.resize_and_copy_from_host(triangles_cpu);
+
+        // load triangle_bvh
+        if (!triangle_bvh) {
+            triangle_bvh = TriangleBvh::make();
+        }
+        triangle_bvh->load_state_dict(state_dict);
+    }
+
     void ray_trace(at::Tensor rays_o, at::Tensor rays_d, at::Tensor positions, at::Tensor face_id, at::Tensor depth) {
 
         const uint32_t n_elements = rays_o.size(0);
@@ -67,6 +90,19 @@ public:
         triangle_bvh->signed_distance_gpu(n_elements, mode, positions.data_ptr<float>(), distances.data_ptr<float>(), face_id.data_ptr<int64_t>(), uvw.has_value() ? uvw.value().data_ptr<float>() : nullptr, triangles_gpu.data(), stream);
     }
 
+    std::unordered_map<std::string, at::Tensor> state_dict() const {
+        // get state_dict from triangle_bvh
+        auto state_dict = triangle_bvh->state_dict();
+        // add triangles_gpu to state_dict
+        auto triangles_tensor = torch::from_blob(
+            (void*)triangles_cpu.data(),
+            {static_cast<int64_t>(triangles_cpu.size()), static_cast<int64_t>(sizeof(Triangle) / sizeof(int32_t))},
+            at::TensorOptions().dtype(at::kInt).device(at::kCPU)
+        ).clone();
+        state_dict["triangles"] = triangles_tensor;
+        return state_dict;
+    }
+
     std::vector<Triangle> triangles_cpu;
     GPUMemory<Triangle> triangles_gpu;
     std::shared_ptr<TriangleBvh> triangle_bvh;
@@ -74,6 +110,10 @@ public:
     
 cuBVH* create_cuBVH(Ref<const Verts> vertices, Ref<const Trigs> triangles) {
     return new cuBVHImpl{vertices, triangles};
+}
+
+cuBVH* from_state_dict(const std::unordered_map<std::string, at::Tensor>& state_dict) {
+    return new cuBVHImpl{state_dict};
 }
 
 at::Tensor floodfill(at::Tensor grid) {

@@ -17,9 +17,11 @@ PYBIND11_MODULE(TORCH_EXTENSION_NAME, m) {
 py::class_<cuBVH>(m, "cuBVH")
     .def("ray_trace", &cuBVH::ray_trace)
     .def("unsigned_distance", &cuBVH::unsigned_distance)
-    .def("signed_distance", &cuBVH::signed_distance);
+    .def("signed_distance", &cuBVH::signed_distance)
+    .def("state_dict", &cuBVH::state_dict);
 
 m.def("create_cuBVH", &create_cuBVH);
+m.def("from_state_dict", &from_state_dict);
 
 m.def("floodfill", &floodfill);
 
