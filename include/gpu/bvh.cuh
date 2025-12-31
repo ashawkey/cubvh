@@ -104,8 +104,8 @@ public:
         m_nodes.resize(nodes_tensor.size(0));
         // Copy data from the tensor to m_nodes
         std::memcpy(m_nodes.data(), nodes_tensor.data_ptr(), m_nodes.size() * sizeof(TriangleBvhNode));
-        // Also update the GPU memory
-        m_nodes_gpu.resize_and_copy_from_host(m_nodes);
+        // Removed for it is now done lazily
+        // m_nodes_gpu.resize_and_copy_from_host(m_nodes);
     }
 };
 
