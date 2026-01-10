@@ -49,6 +49,13 @@ if os.name == "posix":
 	]
 elif os.name == "nt":
 	base_cflags = ["/O2", f"/std:c++{cpp_standard}"]
+	# Workaround for MSVC + CUDA + PyTorch compilation error:
+	# PyTorch's compiled_autograd.h contains template code that triggers
+	# "error C2872: 'std': ambiguous symbol" on Windows.
+	# Defining USE_CUDA activates PyTorch's built-in Windows workaround.
+	# See: https://github.com/pytorch/pytorch/pull/144707
+	base_cflags += ["-DUSE_CUDA"]
+	base_nvcc_flags += ["-DUSE_CUDA"]
 
 '''
 Usage:
