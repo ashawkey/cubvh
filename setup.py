@@ -48,7 +48,8 @@ base_nvcc_flags = [
     "--extended-lambda",
     "--expt-relaxed-constexpr",
 
-    # Required for half precision
+    # The following definitions must be undefined
+	# since we need half-precision operation.
     "-U__CUDA_NO_HALF_OPERATORS__",
     "-U__CUDA_NO_HALF_CONVERSIONS__",
     "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -94,6 +95,14 @@ elif IS_WINDOWS:
 # ==========================================================
 # Extension
 # ==========================================================
+'''
+Usage:
+python setup.py build_ext --inplace # build extensions locally, do not install (only can be used from the parent directory)
+python setup.py install # build extensions and install (copy) to PATH.
+pip install . # ditto but better (e.g., dependency & metadata handling)
+python setup.py develop # build extensions and install (symbolic) to PATH.
+pip install -e . # ditto but better (e.g., dependency & metadata handling)
+'''
 setup(
     ext_modules=[
         CUDAExtension(
