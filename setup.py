@@ -49,7 +49,7 @@ base_nvcc_flags = [
     "--expt-relaxed-constexpr",
 
     # The following definitions must be undefined
-	# since we need half-precision operation.
+    # since we need half-precision operation.
     "-U__CUDA_NO_HALF_OPERATORS__",
     "-U__CUDA_NO_HALF_CONVERSIONS__",
     "-U__CUDA_NO_HALF2_OPERATORS__",
@@ -83,6 +83,9 @@ elif IS_WINDOWS:
     ]
 
     base_nvcc_flags += [
+        # `-allow-unsupported-compiler` suppresses NVCC host-compiler version checks
+		#  so that modern MSVC (VS2022+ builds) can compile with recent CUDA (12/13).
+		#  This flag does NOT disable correctness safety checks.
         "-allow-unsupported-compiler",
 
         # Propagate host flags into NVCC host compiler
