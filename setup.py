@@ -84,8 +84,8 @@ elif IS_WINDOWS:
 
     base_nvcc_flags += [
         # `-allow-unsupported-compiler` suppresses NVCC host-compiler version checks
-		#  so that modern MSVC (VS2022+ builds) can compile with recent CUDA (12/13).
-		#  This flag does NOT disable correctness safety checks.
+        #  so that modern MSVC (VS2022+ builds) can compile with recent CUDA (12/13).
+        #  This flag does NOT disable correctness safety checks.
         "-allow-unsupported-compiler",
 
         # Propagate host flags into NVCC host compiler
