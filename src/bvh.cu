@@ -298,7 +298,7 @@ public:
     }
 
     __host__ __device__ static std::pair<int, float> closest_triangle(const Vector3f& point, const TriangleBvhNode* __restrict__ bvhnodes, const Triangle* __restrict__ triangles, float max_distance_sq = MAX_DIST_SQ) {
-        FixedIntStack query_stack;
+        FixedIntStackLarge query_stack;
         query_stack.push(0);
 
         float shortest_distance_sq = max_distance_sq;

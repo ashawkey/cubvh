@@ -16,6 +16,22 @@ pip install . --no-build-isolation
 ```
 It will take several minutes to build the CUDA dependency.
 
+#### AMD GPU (ROCm)
+
+AMD GPUs are supported via ROCm. Make sure a ROCm-enabled `torch` is installed first (e.g., from [pytorch.org](https://pytorch.org/) selecting the ROCm compute platform), then:
+
+```bash
+# install directly
+pip install git+https://github.com/ashawkey/cubvh --no-build-isolation
+
+# or locally
+git clone --recursive https://github.com/ashawkey/cubvh
+cd cubvh
+PYTORCH_ROCM_ARCH=<your_arch> pip install . --no-build-isolation
+```
+
+Replace `<your_arch>` with your GPU architecture (e.g., `gfx90a` for MI250X, `gfx1100` for RX 7900 XTX). If `PYTORCH_ROCM_ARCH` is unset, the build defaults to the installed GPU's architecture.
+
 #### Trouble Shooting
 **`fatal error: eigen/matrix.h: No such file or directory`**
 
