@@ -5,6 +5,12 @@
 #include <gpu/spcumc.cuh>
 #include <gpu/hashtable.cuh>
 
+#ifdef USE_ROCM
+// torch-ROCm exposes the current stream through a CUDA-masquerading type;
+// pull in its header so at::cuda::getCurrentCUDAStream() resolves under HIP.
+#include <ATen/hip/impl/HIPStreamMasqueradingAsCUDA.h>
+#endif
+
 #include <Eigen/Dense>
 
 using namespace Eigen;

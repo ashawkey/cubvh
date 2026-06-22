@@ -1,9 +1,11 @@
 #pragma once
 
 #include <Eigen/Dense>
+#if defined(__CUDACC__) || defined(__HIPCC__)
 #include <ATen/cuda/CUDAContext.h>
-#include <torch/torch.h>
 #include <cuda_runtime.h>
+#endif
+#include <torch/torch.h>
 #include <memory>
 
 using namespace Eigen;
