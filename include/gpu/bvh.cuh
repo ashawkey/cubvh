@@ -5,43 +5,53 @@
 #include <gpu/bounding_box.cuh>
 #include <gpu/gpu_memory.h>
 
+#include <cstring>
 #include <memory>
+#include <stdexcept>
+#include <unordered_map>
 
 #include <torch/torch.h>
 
 namespace cubvh {
 
+// Node encoding (a serialization contract: previously saved node arrays
+// must keep loading and traversing identically):
+//   left_idx <  0: leaf covering triangle indices [-left_idx-1, -right_idx-1)
+//   left_idx >= 0: inner node whose children are nodes [left_idx, right_idx)
+//   escape_idx: next node in pre-order after this node's subtree; -1 ends
+//   the traversal. Node 0 is the root.
 struct TriangleBvhNode {
     BoundingBox bb;
-    int left_idx; // negative values indicate leaves
+    int left_idx;
     int right_idx;
-    // Threaded BVH escape index for stackless traversal: index of the next node
-    // to visit after finishing this node's subtree. -1 indicates termination.
     int escape_idx;
 };
 
+static_assert(sizeof(TriangleBvhNode) == 36, "TriangleBvhNode layout is a serialization contract");
 
-template <typename T, int MAX_SIZE=32>
+// Fixed-capacity LIFO. A push beyond capacity is dropped and sets a sticky
+// overflow flag (warned once per instance); callers fall back to a
+// stackless traversal when that happens.
+template <typename T, int MAX_SIZE = 32>
 class FixedStack {
 public:
-    __host__ __device__ void push(T val) {
-        // If overflowing, flag and drop the push; a stackless fallback will be used.
-        if (m_count >= MAX_SIZE) {
+    __host__ __device__ void push(T value) {
+        if (m_size >= MAX_SIZE) {
             if (!m_overflowed) {
-                printf("WARNING TOO BIG (stack overflow)\n");
+                m_overflowed = true;
+                printf("warning: FixedStack exceeded its capacity of %d\n", MAX_SIZE);
             }
-            m_overflowed = true;
             return;
         }
-        m_elems[m_count++] = val;
+        m_data[m_size++] = value;
     }
 
     __host__ __device__ T pop() {
-        return m_elems[--m_count];
+        return m_data[--m_size];
     }
 
     __host__ __device__ bool empty() const {
-        return m_count <= 0;
+        return m_size == 0;
     }
 
     __host__ __device__ bool overflowed() const {
@@ -49,38 +59,26 @@ public:
     }
 
 private:
-    T m_elems[MAX_SIZE];
-    int m_count = 0;
+    T m_data[MAX_SIZE];
+    int m_size = 0;
     bool m_overflowed = false;
 };
 
 using FixedIntStack = FixedStack<int>;
 using FixedIntStackLarge = FixedStack<int, 64>;
 
-
 class TriangleBvh {
-
-protected:
-    std::vector<TriangleBvhNode> m_nodes;
-    GPUMemory<TriangleBvhNode> m_nodes_gpu;
-    TriangleBvh() {};
-
 public:
-    virtual void build(std::vector<Triangle>& triangles, uint32_t n_primitives_per_leaf) = 0;
+    virtual ~TriangleBvh() {}
 
+    virtual void build(std::vector<Triangle>& triangles, uint32_t n_primitives_per_leaf) = 0;
     virtual void signed_distance_gpu(uint32_t n_elements, uint32_t mode, const float* positions, float* distances, int64_t* face_id, float* uvw, const Triangle* gpu_triangles, cudaStream_t stream) = 0;
     virtual void unsigned_distance_gpu(uint32_t n_elements, const float* positions, float* distances, int64_t* face_id, float* uvw, const Triangle* gpu_triangles, cudaStream_t stream) = 0;
     virtual void ray_trace_gpu(uint32_t n_elements, const float* rays_o, const float* rays_d, float* positions, int64_t* face_id, float* depth, const Triangle* gpu_triangles, cudaStream_t stream) = 0;
 
-    // KIUI: not supported now.
-    // virtual bool touches_triangle(const BoundingBox& bb, const Triangle* __restrict__ triangles) const = 0;
-    // virtual void build_optix(const GPUMemory<Triangle>& triangles, cudaStream_t stream) = 0;
-
     static std::unique_ptr<TriangleBvh> make();
 
-    TriangleBvhNode* nodes_gpu() const {
-        return m_nodes_gpu.data();
-    }
+    TriangleBvhNode* nodes_gpu() const { return m_nodes_gpu.data(); }
 
     std::unordered_map<std::string, at::Tensor> state_dict() const {
         std::unordered_map<std::string, at::Tensor> state;
@@ -108,6 +106,12 @@ public:
         // Removed for it is now done lazily
         // m_nodes_gpu.resize_and_copy_from_host(m_nodes);
     }
+
+protected:
+    TriangleBvh() {}
+
+    std::vector<TriangleBvhNode> m_nodes;
+    GPUMemory<TriangleBvhNode> m_nodes_gpu;
 };
 
-}
+} // namespace cubvh
