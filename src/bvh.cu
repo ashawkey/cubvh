@@ -151,13 +151,16 @@ public:
                 // surviving ones far-to-near so the nearest pops first
                 int slot[FANOUT];
                 float key[FANOUT];
-                #pragma unroll
+                // Rolled deliberately: unrolling keeps all four children's
+                // boxes and hit distances live at once, which costs enough
+                // registers to halve occupancy on wave32 parts.
+                #pragma unroll 1
                 for (int k = 0; k < FANOUT; ++k) {
                     slot[k] = node.left_idx + k;
                     key[k] = nodes[slot[k]].bb.ray_intersect(ro, rd).x();
                 }
                 sort_children(key, slot);
-                #pragma unroll
+                #pragma unroll 1
                 for (int k = FANOUT - 1; k >= 0; --k) {
                     if (key[k] < t_hit) {
                         stack.push(slot[k]);
