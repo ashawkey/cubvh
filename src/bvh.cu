@@ -178,7 +178,7 @@ public:
 
     static __host__ __device__ std::pair<int, float> closest_result(int idx, float d2) {
         if (idx < 0) {
-            return std::make_pair(0, 0.0f);
+            return std::make_pair(-1, std::numeric_limits<float>::infinity());
         }
         return std::make_pair(idx, sqrtf(d2));
     }
@@ -208,7 +208,7 @@ public:
     }
 
     // Returns {triangle array index, unsquared distance}. When nothing lies
-    // within the bound the historical result is {0, 0}.
+    // within the bound the result is {-1, +inf}.
     static __host__ __device__ std::pair<int, float> closest_triangle(const Vector3f& point, const TriangleBvhNode* nodes, const Triangle* triangles, float max_distance_sq = MAX_DIST_SQ) {
         FixedIntStackLarge stack;
         stack.push(0);
@@ -326,6 +326,9 @@ public:
     // Sign from the average normal at the closest surface point.
     static __host__ __device__ std::pair<int, float> signed_distance_watertight(const Vector3f& point, const TriangleBvhNode* nodes, const Triangle* triangles, float max_distance_sq = MAX_DIST_SQ) {
         const std::pair<int, float> best = closest_triangle(point, nodes, triangles, max_distance_sq);
+        if (best.first < 0) {
+            return best;
+        }
         const Vector3f surface = triangles[best.first].closest_point(point);
         const Vector3f n = avg_normal_around_point(surface, nodes, triangles);
         return std::make_pair(best.first, copysignf(best.second, n.dot(point - surface)));
@@ -335,6 +338,9 @@ public:
     // direction set: any unobstructed direction (either way) means outside.
     static __host__ __device__ std::pair<int, float> signed_distance_raystab(const Vector3f& point, const TriangleBvhNode* nodes, const Triangle* triangles, float max_distance_sq = MAX_DIST_SQ, pcg32 rng = {}) {
         const std::pair<int, float> best = closest_triangle(point, nodes, triangles, max_distance_sq);
+        if (best.first < 0) {
+            return best;
+        }
 
         const Vector2f offset = {rng.next_float(), rng.next_float()};
         for (uint32_t i = 0; i < N_STAB_DIRS; ++i) {
@@ -428,6 +434,14 @@ __global__ void bvh_unsigned_distance_kernel(const uint32_t n, const Vector3f* _
 
     const Vector3f point = positions[i];
     const std::pair<int, float> best = TriangleBvhImpl::closest_triangle(point, nodes, triangles, max_distance_sq);
+    if (best.first < 0) {
+        distances[i] = best.second;
+        face_id[i] = -1;
+        if (uvw) {
+            uvw[i] = Vector3f::Zero();
+        }
+        return;
+    }
     const Triangle& tri = triangles[best.first];
 
     distances[i] = best.second;
@@ -443,6 +457,14 @@ __global__ void bvh_signed_distance_watertight_kernel(const uint32_t n, const Ve
 
     const Vector3f point = positions[i];
     const std::pair<int, float> best = TriangleBvhImpl::signed_distance_watertight(point, nodes, triangles);
+    if (best.first < 0) {
+        distances[i] = best.second;
+        face_id[i] = -1;
+        if (uvw) {
+            uvw[i] = Vector3f::Zero();
+        }
+        return;
+    }
     const Triangle& tri = triangles[best.first];
 
     distances[i] = best.second;
@@ -462,6 +484,14 @@ __global__ void bvh_signed_distance_raystab_kernel(const uint32_t n, const Vecto
 
     const Vector3f point = positions[i];
     const std::pair<int, float> best = TriangleBvhImpl::signed_distance_raystab(point, nodes, triangles, MAX_DIST_SQ, rng);
+    if (best.first < 0) {
+        distances[i] = best.second;
+        face_id[i] = -1;
+        if (uvw) {
+            uvw[i] = Vector3f::Zero();
+        }
+        return;
+    }
     const Triangle& tri = triangles[best.first];
 
     distances[i] = best.second;
